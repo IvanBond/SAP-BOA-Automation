@@ -4,6 +4,7 @@ Is a toolkit that allows you to automate refresh of your workbooks with BOA data
 If you have a workbook based on BOA and want to automate change of Variables or filters on dimensions, and then refresh process itself - try this toolkit.
 
 It consists of two files
+
 1. BOA Control Panel.xlsb
 2. BOA Var Collector.xlsb
 
