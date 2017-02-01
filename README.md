@@ -1,37 +1,24 @@
-## Welcome to GitHub Pages
+## SAP BOA Automation toolkit
 
-You can use the [editor on GitHub](https://github.com/IvanBond/SAP-BOA-Automation/edit/master/README.md) to maintain and preview the content for your website in Markdown files.
+Is a toolkit that allows you to automate refresh of your workbooks with BOA data soures (queries).
+If you have a workbook based on BOA and want to automate change of Variables or filters on dimensions, and then refresh process itself - try this toolkit.
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+It consists of two files
+1. BOA Control Panel.xlsb
+2. BOA Var Collector.xlsb
 
-### Markdown
+Both files contain VBA code, which does all the job.
 
-Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
+# BOA Var Collector
 
-```markdown
-Syntax highlighted code block
+Is used to get list of Data Sources and Variables - base for refresh process.
 
-# Header 1
-## Header 2
-### Header 3
+# BOA Control Panel
 
-- Bulleted
-- List
+Is your future operational center. Workbook contains only one worksheet, which includes
+- tables defining scenarios of refresh and variables with their values
+- VBA code
 
-1. Numbered
-2. List
+# How to use it
 
-**Bold** and _Italic_ and `Code` text
-
-[Link](url) and ![Image](src)
-```
-
-For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
-
-### Jekyll Themes
-
-Your Pages site will use the layout and styles from the Jekyll theme you have selected in your [repository settings](https://github.com/IvanBond/SAP-BOA-Automation/settings). The name of this theme is saved in the Jekyll `_config.yml` configuration file.
-
-### Support or Contact
-
-Having trouble with Pages? Check out our [documentation](https://help.github.com/categories/github-pages-basics/) or [contact support](https://github.com/contact) and we’ll help you sort it out.
+add description
