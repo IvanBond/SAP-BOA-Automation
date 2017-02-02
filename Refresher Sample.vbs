@@ -1,4 +1,4 @@
-' sample VBS
+' sample of a VBscript that can be scheduled e.g. in Windows Tasks Scheduler
 
 'Samples of call VBS from .bat or command prompt
 ' Refresher.vbs /TargetFilePath:"C:\Temp\Test.xlsm"
