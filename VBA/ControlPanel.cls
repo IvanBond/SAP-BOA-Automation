@@ -11,8 +11,7 @@ Option Explicit
 Option Compare Text
 
 ' Author: Ivan Bondarenko
-' Release date: 2017-01
-' bondarenko.ivan@me.com
+' Initial release: 2017-01
 ' https://bondarenkoivan.wordpress.com
 ' https://linkedin.com/in/bondarenkoivan/en
 ' Big Thanks to Andres Merino for ideas and testing!
@@ -101,7 +100,6 @@ Function Refresh() As Boolean
         Run Trim(arrMacrosBefore(i))
         If Err.Number <> 0 Then
             Debug.Print "Couldn't run macro " & Trim(arrMacrosBefore(i))
-            ' Stop
             GoTo ErrHandler
         End If
         On Error GoTo 0
@@ -134,7 +132,7 @@ Function Refresh() As Boolean
                     If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), "100", arrDS(i, enumDataSource.DS_User), _
                             GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
                             arrDS(i, enumDataSource.DS_Language)) = 0 Then
-                        'Stop
+                        
                         Err.Raise 22, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                         GoTo ErrHandler
                         ' couldn't logon
@@ -170,7 +168,10 @@ Function Refresh() As Boolean
             End If
             
             Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
-            Call ApplyScopeFilters(ThisWorkbook.Names("SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID)))
+            If Not ApplyScopeFilters(ThisWorkbook.Names("SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                Err.Raise 28, "Refresh", "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                GoTo ErrHandler
+            End If
 
             ' refresh report
             Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID)
@@ -362,14 +363,8 @@ Private Function LogOn_DataSources() As Boolean
                     GetPassword(CStr(Key), _
                         sUser), _
                     sLanguage) = 0 Then
-    
-                    ' debug mode, TODO - remove
-                    Stop
-    
-                    ' debug
-                    'MsgBox "Couldn't log on to the system " & .ListColumns("System").DataBodyRange.Cells(i, 1).Value
-                    ' in productive version -
-                    ' WRITE LOG
+                    
+                    Debug.Print "Couldn't log on to the system " & .ListColumns("System").DataBodyRange.Cells(i, 1).Value
                     Exit Function ' leave Log_On_Systems as False
                 Else
                     LogOn_DataSources = True
@@ -386,8 +381,8 @@ Private Function GetPassword(system As String, username As String) As String
     ' Expected txt file with structure
     ' SYSTEM;USERNAME;PASSWORD
     ' Sample:
-    ' p22;bondaiva;12345
-    ' P22; bondaiva; 23456
+    ' P01;ivan;12345
+    ' P01; ivan; 23456
     ' spaces will be trimmed, case doesn't matter (only in password)
     
     Dim objFile As Object
@@ -453,7 +448,7 @@ Private Sub Write_Log(Msg As String)
     End If
 End Sub
 
-Private Sub ApplyScopeFilters(scope As String, data_source As String)
+Private Function ApplyScopeFilters(scope As String, data_source As String) As Boolean
     Dim arr_var_scope
     Dim arr_var_ds
     Dim arr_var_command
@@ -493,14 +488,15 @@ Private Sub ApplyScopeFilters(scope As String, data_source As String)
             If arr_var_command(variable_row, 1) = "SAPSetFilter" Then
                 If arr_var_ref_type(variable_row, 1) = "Range" Then
                     
+                    ' easier then INPUT_STRING_AS_ARRAY?
                     arrVariableValue = Get_Array_From_Range(Application.Range(CStr(arr_var_value(variable_row, 1))).Address(external:=True))
                     For i = 1 To UBound(arrVariableValue)
                         sVariableValue = sVariableValue & "; " & arrVariableValue(i, 1)
                     Next i
                     sVariableValue = Mid(sVariableValue, 3)
                     
-                    '    sVariableValue = "1; 2; 3; .... 90000; ..."
-                    '    sVariableValue = "!1; !2; !3; .... !90000; ..."
+                    '    sVariableValue = "1; 2; 3; .... 90000; ... "
+                    '    sVariableValue = "!1; !2; !3; .... !90000; ... "
                 Else
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
@@ -512,9 +508,9 @@ Private Sub ApplyScopeFilters(scope As String, data_source As String)
                         arr_var_ds(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
                         sVariableValue) = 0 Then
-                    Stop
-                    ' TODO - write log
-                    ' exit with error
+                    
+                    Debug.Print "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    Exit Function
                 End If ' successful command
             End If ' var command
         End If ' var scope and data source
@@ -528,13 +524,14 @@ Private Sub ApplyScopeFilters(scope As String, data_source As String)
             If arr_var_command(variable_row, 1) = "SAPSetVariable" Then
                 If arr_var_ref_type(variable_row, 1) = "Range" Then
                     
+                    ' easier then INPUT_STRING_AS_ARRAY?
                     arrVariableValue = Get_Array_From_Range(Application.Range(CStr(arr_var_value(variable_row, 1))).Address(external:=True))
                     For i = 1 To UBound(arrVariableValue)
                         sVariableValue = sVariableValue & "; " & arrVariableValue(i, 1)
                     Next i
                     sVariableValue = Mid(sVariableValue, 3)
                     
-                    '    sVariableValue = "1; 2; 3; .... 90000; ..."
+                    '    sVariableValue = "1; 2; 3; .... 90000; ... "
                     '    sVariableValue = "!1; !2; !3; .... !90000; ... "
                 Else
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
@@ -548,20 +545,21 @@ Private Sub ApplyScopeFilters(scope As String, data_source As String)
                         sVariableValue, _
                         "INPUT_STRING", _
                         arr_var_ds(variable_row, 1)) = 0 Then
-                    Stop
-                    ' TODO - write log
-                    ' exit with error
+                    
+                    Debug.Print "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    GoTo Exit_sub
                 End If
             End If ' var command
         End If ' var scope and data source
     Next variable_row
     
+    ApplyScopeFilters = True
 Exit_sub:
-    Exit Sub
+    Exit Function
 
 ErrHandler:
     Resume Exit_sub
-End Sub
+End Function
 
 Private Sub GetArrDS()
     ' sub collects all active data sources
@@ -575,7 +573,7 @@ Private Sub GetArrDS()
     
     If WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange, "=") > 0 Then
         Me.ListObjects("DATA_SOURCES").ListColumns("Order").Range.Select
-        MsgBox "Please, provide order of execution."
+        Debug.Print "Please, provide order of execution."
         Exit Sub
     End If
     
@@ -621,8 +619,8 @@ Exit_sub:
     Exit Sub
     
 ErrHandler:
-    MsgBox Err.Number & ": " & Err.Description
-    Stop
+    Debug.Print Err.Number & ": " & Err.Description
+    ' Stop
     Resume Exit_sub
     Resume 'debug
 End Sub
