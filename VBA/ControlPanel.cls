@@ -49,6 +49,7 @@ Enum enumDataSource ' used to reference to elements of arrDS array
     DS_System = 3
     DS_User = 4
     DS_MacrosAfter = 5
+    DS_Client = 6
 End Enum
 '
 
@@ -248,7 +249,12 @@ Function Refresh() As Boolean
         
     Refresh = True
     
+    
+    
 Exit_Function:
+    Application.StatusBar = "Disabling BOA..."
+    Call DisableBOA
+
     Application.EnableEvents = True
     Application.ScreenUpdating = True ' just in case
     Application.StatusBar = vbNullString
@@ -270,8 +276,20 @@ Private Sub EnableBOA()
         If addin.progID = "SapExcelAddIn" Then
             If addin.Connect = False Then
                 addin.Connect = True
-                Exit For
+                Exit Sub
             End If
+        End If
+    Next
+    
+End Sub
+
+Private Sub DisableBOA()
+    Dim addin As COMAddIn
+
+    For Each addin In Application.COMAddIns
+        If addin.progID = "SapExcelAddIn" Then
+            addin.Connect = False
+            Exit Sub
         End If
     Next
     
@@ -286,6 +304,7 @@ Private Function LogOn_DataSources() As Boolean
     Dim sLanguage As String
     Dim sUser     As String
     Dim sSystem   As String
+    Dim sClient   As String
     Dim dicSystems As Object
     Dim Key
     
@@ -334,13 +353,34 @@ Private Function LogOn_DataSources() As Boolean
                             Exit Function
                         End If
                     End If
-                
+                    
+                    ' check if different clients used in Scope
+                    If sClient = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
+                    ' on first step - remember value in variable
+                        sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
+                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
+                    Else
+                    ' second and further steps - compare each row with value in variable
+                        If sClient <> IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
+                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    .ListColumns("Client").DataBodyRange.Cells(r, 1).Value) And _
+                                .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
+                            bMultiLogonMode = True
+                            LogOn_DataSources = True
+                            Exit Function
+                        End If
+                    End If
+                    
                     ' Dictionary of Systems
                     sSystem = IIf(.ListColumns("System").DataBodyRange.Cells(r, 1).Value = vbNullString, _
                                     ThisWorkbook.Names("GENERAL_SYSTEM").RefersToRange.Value, _
                                         .ListColumns("System").DataBodyRange.Cells(r, 1).Value)
-                    If Not dicSystems.exists(sSystem) Then
-                        dicSystems.Add sSystem, .ListColumns("Data Source").DataBodyRange.Cells(r, 1).Value
+                    'sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
+                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                        .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
+                    If Not dicSystems.exists(sSystem & "+" & sClient) Then
+                        dicSystems.Add sSystem & "+" & sClient, .ListColumns("Data Source").DataBodyRange.Cells(r, 1).Value
                     End If
                 
                 End If ' row in Scope, System and Language is not null
@@ -358,9 +398,9 @@ Private Function LogOn_DataSources() As Boolean
                 ' 'arrDS(1, enumDataSource.DS_ID),
                 If Run("SapLogon", _
                     CStr(dicSystems.Item(Key)), _
-                    "100", _
+                    Split(Key, "+")(1), _
                     sUser, _
-                    GetPassword(CStr(Key), _
+                    GetPassword(CStr(Split(Key, "+")(0)), _
                         sUser), _
                     sLanguage) = 0 Then
                     
@@ -512,6 +552,7 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     Debug.Print "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
                     Exit Function
                 End If ' successful command
+                sVariableValue = vbNullString
             End If ' var command
         End If ' var scope and data source
     Next variable_row
@@ -549,6 +590,7 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     Debug.Print "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
                     GoTo Exit_sub
                 End If
+                sVariableValue = vbNullString
             End If ' var command
         End If ' var scope and data source
     Next variable_row
@@ -581,7 +623,7 @@ Private Sub GetArrDS()
     n = WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange, _
             ThisWorkbook.Names("SCOPE").RefersToRange.Value)
     
-    ReDim arrDS(n, 5)
+    ReDim arrDS(n, 6)
     For i = 1 To Me.ListObjects("DATA_SOURCES").DataBodyRange.Rows.Count
         ' fill array according to order of execution
     
@@ -612,6 +654,12 @@ Private Sub GetArrDS()
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1) = vbNullString, _
                     ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1).Value)
+        
+            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1), enumDataSource.DS_Client) = _
+                IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1) = vbNullString, _
+                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                        Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1).Value)
+        
         End If
     Next i
 
