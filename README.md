@@ -1,41 +1,32 @@
-## SAP BOA Automation toolkit
+## SAP BO Analysis for Offfice (BOAO) Automation
 
-Is a toolkit that allows you to automate refresh of your workbooks with BOA data soures (queries).
-If you have a workbook based on BOA and want to automate change of Variables or filters on dimensions, and then refresh process itself - try this toolkit.
+This tool allows you to automate refresh of your workbooks with BOA data soures.
+If you have a workbook based on BOA and want to automate change of Variables or dimension Filters, and then refresh process itself - try this tool.
 
-It consists of two files
+Solution consists of only one file
 
-1. [BOA Control Panel.xlsb](https://github.com/IvanBond/SAP-BOA-Automation/blob/master/BOA%20Control%20Panel.xlsb)
-2. [BOA Var Collector.xlsb](https://github.com/IvanBond/SAP-BOA-Automation/blob/master/BOA%20Var%20Collector.xlsb)
+- [BOA Control Panel.xlsb](https://github.com/IvanBond/SAP-BOA-Automation/blob/master/BOA%20Control%20Panel.xlsb)
 
-Both files contain VBA code, which does all the job.
-
-# BOA Var Collector
-
-Is used to get list of Data Sources and Variables - base for refresh process.
+File contains only one worksheet, which can be easily moved to your workbook. Then just collect variables, set values and run Refresh.
 
 # BOA Control Panel
 
-Is your future operational center. Workbook contains only one worksheet, which includes
+Your future operational center. Workbook contains only one worksheet, which includes
 - tables defining scenarios of refresh and variables with their values
 - VBA code
 
-# How to use this toolkit
+# How to use this tool
 
 Assume you already have a workbook with BOA data sources in it and want to simply refresh process. Let's call it 'Target Workbook'.
 
-1. Prepare list of data sources and variables for your workbook. 'Var Collector' with help you.
+1. Prepare list of data sources and variables for your workbook. Press 'Collect Variables'.
 
     - Start empty copy of MS Excel.
-    - Open 'Target Workbook' and 'Var Collector'
-    - Run 'Collect Variables' in 'Var Collector'
-
-2. Open copy of 'BOA Control Panel'
-- Move worksheet 'ControlPanel' to 'Target Workbook'
-
-3. Copy red columns from 'Var Collector' and paste as values into corresponding tables on ControlPanel worksheet in 'Target Workbook'. Ensure that tables had been expanded.
-
-4. Specify necessary settings, such as "Scope", "Refresh?", "Order", values for Variables.
+    - Open 'Target Workbook' and 'BOA Control Panel'
+    - Move 'ControlPanel' sheet to 'Target Workbook'
+    - Press 'Collect Variables'
+    
+2. Specify necessary settings, such as "Scope", "Refresh?", "Order", values for Variables and Filters.
 
 You are ready to refresh!
 
@@ -57,7 +48,7 @@ Easy. Just define two Scopes with corresponding values for variables.
 
 If you run refresh from outside of workbook, e.g. like it is shown in [Sample Refresher VB script](https://github.com/IvanBond/SAP-BOA-Automation/blob/master/Refresher%20Sample.vbs) - you can even run refresh in parallel.
 
-# Tables of ControlPanel
+# Tables on ControlPanel
 
 ![Scopes and Data Sources](https://bondarenkoivan.files.wordpress.com/2017/02/boa-automation-scopes-and-data-sources.png)
 
