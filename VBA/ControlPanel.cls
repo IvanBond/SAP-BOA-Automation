@@ -264,18 +264,19 @@ Exit_Function:
 ErrHandler:
     ' send email?
     Debug.Print Err.Number & ": " & Err.Description
+    Err.Clear
     On Error GoTo 0
-    Resume Exit_Function
+    GoTo Exit_Function
     Resume
 End Function
 
 Private Sub EnableBOA()
-    Dim addin As COMAddIn
+    Dim addIn As COMAddIn
 
-    For Each addin In Application.COMAddIns
-        If addin.progID = "SapExcelAddIn" Then
-            If addin.Connect = False Then
-                addin.Connect = True
+    For Each addIn In Application.COMAddIns
+        If addIn.progID = "SapExcelAddIn" Then
+            If addIn.Connect = False Then
+                addIn.Connect = True
                 Exit Sub
             End If
         End If
@@ -284,11 +285,11 @@ Private Sub EnableBOA()
 End Sub
 
 Private Sub DisableBOA()
-    Dim addin As COMAddIn
+    Dim addIn As COMAddIn
 
-    For Each addin In Application.COMAddIns
-        If addin.progID = "SapExcelAddIn" Then
-            addin.Connect = False
+    For Each addIn In Application.COMAddIns
+        If addIn.progID = "SapExcelAddIn" Then
+            addIn.Connect = False
             Exit Sub
         End If
     Next
@@ -451,7 +452,9 @@ Exit_Function:
 
 ErrHandler:
     Debug.Print Err.Number & ": " & Err.Description
-    Resume Exit_Function
+    Err.Clear
+    On Error GoTo 0
+    GoTo Exit_Function
     Resume
 End Function
 
@@ -600,7 +603,9 @@ Exit_sub:
     Exit Function
 
 ErrHandler:
-    Resume Exit_sub
+    Err.Clear
+    On Error GoTo 0
+    GoTo Exit_sub
 End Function
 
 Private Sub GetArrDS()
@@ -669,7 +674,9 @@ Exit_sub:
 ErrHandler:
     Debug.Print Err.Number & ": " & Err.Description
     ' Stop
-    Resume Exit_sub
+    Err.Clear
+    On Error GoTo 0
+    GoTo Exit_sub
     Resume 'debug
 End Sub
 
@@ -709,3 +716,259 @@ Private Function CreatePath(NewPath As String) As Boolean
     End If
 
 End Function
+
+' ***********************************************************************************
+' *                             COLLECTION OF VARIABLES                             *
+' *                                                                                 *
+' ***********************************************************************************
+
+' Author: Ivan Bondarenko
+' Release date: 2017-01
+' https://bondarenkoivan.wordpress.com
+' https://linkedin.com/in/bondarenkoivan/en
+
+' + inspiration from https://blogs.sap.com/2017/02/03/analysis-for-office-variables-and-filters-via-vba/
+
+Sub Collect_Variables()
+' sub will add data sources and variables into existing tables
+    
+    Dim arrVar
+    Dim arrFilters
+    Dim arrDimensions
+    Dim r
+    Dim r_ds
+    Dim i As Long
+    Dim Var, Fil, Dimen
+    Dim sPassword As String
+    Dim sSystem   As String
+    Dim order As Long
+    
+    Application.Cursor = xlWait
+    Application.ScreenUpdating = False
+    
+    'On Error Resume Next
+    'ThisWorkbook.Sheets("Result").ListObjects("VARIABLES").DataBodyRange.Rows.Delete
+    'ThisWorkbook.Sheets("Result").ListObjects("DATA_SOURCES").DataBodyRange.Rows.Delete
+    'On Error GoTo ErrHandler
+    
+    ' If Application.Workbooks.Count = 1 Then Exit Sub
+    ' Call LogOffBOA
+    
+    Application.StatusBar = "Enabling BOA..."
+    Call EnableBOA
+    Application.StatusBar = vbNullString
+    ThisWorkbook.Activate
+    
+    Call GetListOfDS ' get list of Data Sources
+    
+    order = 1
+    If IsArray(arrDS) Then
+        ' for each DS in workbook - collect variables
+        For i = LBound(arrDS, 1) To UBound(arrDS, 1)
+            
+            If Not Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
+                
+                Application.StatusBar = "Refreshing..."
+                Run "SAPExecuteCommand", "Refresh" ' , arrDS(i, 1)
+                
+            End If
+            
+            If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
+                Application.StatusBar = "Collecting variables and filters..."
+                Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
+                'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
+                
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, 1) ' Sheet Name
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source Name").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                    Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "DataSourceName")
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Query").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                    Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "QueryTechName")
+                
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("System").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                    Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "System")
+                
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Refresh?").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = "Y"
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Order").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = order
+                order = order + 1
+                
+                ' Get Variables
+                arrVar = Application.Run("SAPListOfVariables", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING", "PROMPTS")
+                
+                If IsArray(arrVar) Then
+                    On Error Resume Next
+                    Debug.Print arrVar(1, 1)
+                    If Err.Number <> 0 Then
+                        Err.Clear
+                        On Error GoTo 0
+                        ' 1-dimensional - only 1 variable
+                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        
+                        r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                        
+                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(1), "TECHNICALNAME")
+                            
+                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(1)
+                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(2)
+                    Else
+                        ' two-dimentional
+                        For Var = LBound(arrVar) To UBound(arrVar)
+                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                            
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                            r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                            
+                            r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                    Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(Var, 1), "TECHNICALNAME")
+                                
+                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(Var, 1)
+                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(Var, 2)
+                        Next Var
+                    End If
+                    
+                Else
+                ' if no variables in Data Source
+                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                    r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                    r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                    r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
+                    r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Not applicable"
+                    r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
+                End If
+                
+                ' Get Filters
+                ' arrFilters = Application.Run("SAPListOfEffectiveFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
+                ' Effective filters also includes variables
+                
+                ' dynamic filters includes dimensions and measures
+                arrFilters = Application.Run("SAPListOfDynamicFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
+                arrDimensions = Application.Run("SAPListOfDimensions", arrDS(i, enumDataSource.DS_ID))
+                
+                If IsArray(arrFilters) Then
+                    On Error Resume Next
+                    Debug.Print arrFilters(1, 1)
+                    If Err.Number <> 0 Then
+                        Err.Clear
+                        On Error GoTo 0
+                        ' 1-dimensional - only 1 variable
+                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                        
+                        For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
+                             If arrDimensions(Dimen, 2) = arrFilters(1) Then
+                                r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                Exit For
+                             End If
+                        Next Dimen
+                            
+                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(1)
+                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(2)
+                        
+                    Else
+                        ' 2-deminsional
+                        For Fil = LBound(arrFilters) To UBound(arrFilters)
+                            If arrFilters(Fil, 1) <> "Measures" Then
+                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                                r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                                r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                                
+                                For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
+                                     If arrDimensions(Dimen, 2) = arrFilters(Fil, 1) Then
+                                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                        Exit For
+                                     End If
+                                Next Dimen
+                                    
+                                r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(Fil, 1)
+                                r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(Fil, 2)
+                            End If ' if measures
+                        Next Fil
+                    
+                    
+                    End If
+                Else
+                
+                End If ' If IsArray(arrFilters)
+                
+            Else
+                ' write that DS is not active
+                
+                ' MsgBox "Please, refresh data source " & arrDS(i, 1)
+            End If ' isDataSourceActive
+        Next i ' next DS in arrDS
+    Else
+        
+    
+    End If ' If IsArray(arrDS) Then
+
+    Me.Range("DATA_SOURCES[#All]").RemoveDuplicates Header:=xlYes, _
+    Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        
+    Me.Range("VARIABLES[#All]").RemoveDuplicates Header:=xlYes, _
+     Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        
+Exit_sub:
+    Erase arrDS
+    Application.Cursor = xlDefault
+    Application.StatusBar = vbNullString
+    Application.ScreenUpdating = True
+    Exit Sub
+    
+ErrHandler:
+    On Error GoTo 0
+    Application.ScreenUpdating = True
+    Debug.Print Err.Number & ": " & Err.Description
+    Application.Cursor = xlDefault
+    GoTo Exit_sub
+    Resume ' for debug
+End Sub
+
+Private Sub GetListOfDS()
+' Sub for "collect variables" part
+    Dim tmpCrossTabs
+    Dim i As Long
+    
+    ' works for active workbook
+    tmpCrossTabs = Application.Run("SAPListOf", "CROSSTABS")
+    
+    On Error Resume Next
+    If Not IsArray(tmpCrossTabs) Then Exit Sub
+    Debug.Print tmpCrossTabs(1, 1) ' check if it is 2-dim array (when only 1 DS - response is 1-dim array)
+    
+    If Err.Number <> 0 Then
+        Err.Clear
+        On Error GoTo 0
+        ' only 1 dimension
+        ReDim arrDS(0, 1)
+        arrDS(0, enumDataSource.DS_ID) = tmpCrossTabs(3) ' data source ID
+
+        On Error Resume Next
+        arrDS(0, 1) = ActiveWorkbook.Names("SAP" & tmpCrossTabs(1)).RefersToRange.Parent.Name ' worksheet name
+        ' not 100% precise method, can fail if user rename NamedRange
+        Err.Clear
+        On Error GoTo 0
+        
+    Else
+        Err.Clear
+        On Error GoTo 0
+        ' arrDS = tmpCrossTabs
+        ReDim arrDS(UBound(tmpCrossTabs, 1) - 1, 1)
+        
+        For i = 0 To UBound(tmpCrossTabs, 1) - 1
+            arrDS(i, enumDataSource.DS_ID) = tmpCrossTabs(i, 3) ' data source ID
+            
+            On Error Resume Next
+            arrDS(i, 1) = Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
+            ' not 100% precise method, can fail if user rename NamedRange
+            Err.Clear
+            On Error GoTo 0
+        Next i
+        
+    End If
+
+End Sub
+
+
