@@ -42,6 +42,8 @@ Dim bMultiLogonMode As Boolean
 ' to be sure that next data source will be refreshed with defined language
 ' and defined user
 
+Dim NamedRangesScope ' can be Workbook or Worksheet
+
 Enum enumDataSource ' used to reference to elements of arrDS array
     DS_ID = 0
     DS_Refresh = 1
@@ -61,6 +63,19 @@ Private Sub DefineGlobalVariables()
     End If
     
     Call GetArrDS  ' populate array with data sources
+        
+End Sub
+
+Private Sub DefineNamedRangeScope()
+    On Error Resume Next
+    ' if user copy ControlPanel several times and do not delete #REF named ranges after deletion of ControlPanel
+    ' Excel makes ControlPanel's named ranges in scope of worksheet
+    Debug.Print ThisWorkbook.Names("SCOPE").RefersToRange.Address
+    If Err.Number <> 0 Then
+        Set NamedRangesScope = Me
+    Else
+        Set NamedRangesScope = ThisWorkbook
+    End If
 End Sub
 
 Function Refresh() As Boolean
@@ -753,20 +768,35 @@ Sub Collect_Variables()
     
     ' If Application.Workbooks.Count = 1 Then Exit Sub
     ' Call LogOffBOA
+    Call DefineNamedRangeScope
     
     Application.StatusBar = "Enabling BOA..."
     Call EnableBOA
     Application.StatusBar = vbNullString
     ThisWorkbook.Activate
     
+    Call ListObjectDeleteEmptyRows(Me.ListObjects("DATA_SOURCES"))
+    Call ListObjectDeleteEmptyRows(Me.ListObjects("VARIABLES"))
+    
     Call GetListOfDS ' get list of Data Sources
     
     order = 1
     If IsArray(arrDS) Then
         ' for each DS in workbook - collect variables
+        'For i = 1 To UBound(arrDS, 1)
         For i = LBound(arrDS, 1) To UBound(arrDS, 1)
+            If arrDS(i, enumDataSource.DS_ID) = vbNullString Then GoTo Next_DS
             
             If Not Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
+                
+                Application.StatusBar = "Loggin On..."
+                Call Application.Run("SapLogon", _
+                    CStr(arrDS(i, enumDataSource.DS_ID)), _
+                    NamedRangesScope.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                    NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value, _
+                    GetPassword(NamedRangesScope.Names("GENERAL_SYSTEM").RefersToRange.Value, _
+                        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value), _
+                    NamedRangesScope.Names("GENERAL_LANGUAGE").RefersToRange.Value)
                 
                 Application.StatusBar = "Refreshing..."
                 Run "SAPExecuteCommand", "Refresh" ' , arrDS(i, 1)
@@ -775,8 +805,8 @@ Sub Collect_Variables()
             
             If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 Application.StatusBar = "Collecting variables and filters..."
-                Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
-                'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
+                'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
+                Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
                 
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, 1) ' Sheet Name
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -802,7 +832,8 @@ Sub Collect_Variables()
                         Err.Clear
                         On Error GoTo 0
                         ' 1-dimensional - only 1 variable
-                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                         
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                         r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
@@ -815,7 +846,8 @@ Sub Collect_Variables()
                     Else
                         ' two-dimentional
                         For Var = LBound(arrVar) To UBound(arrVar)
-                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                            'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                             r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
@@ -830,7 +862,8 @@ Sub Collect_Variables()
                     
                 Else
                 ' if no variables in Data Source
-                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                    ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                     r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                     r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
                     r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
@@ -853,7 +886,8 @@ Sub Collect_Variables()
                         Err.Clear
                         On Error GoTo 0
                         ' 1-dimensional - only 1 variable
-                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                         r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
                         
@@ -871,7 +905,8 @@ Sub Collect_Variables()
                         ' 2-deminsional
                         For Fil = LBound(arrFilters) To UBound(arrFilters)
                             If arrFilters(Fil, 1) <> "Measures" Then
-                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                                'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                                 r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                                 r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
                                 
@@ -898,6 +933,7 @@ Sub Collect_Variables()
                 
                 ' MsgBox "Please, refresh data source " & arrDS(i, 1)
             End If ' isDataSourceActive
+Next_DS:
         Next i ' next DS in arrDS
     Else
         
@@ -909,6 +945,9 @@ Sub Collect_Variables()
         
     Me.Range("VARIABLES[#All]").RemoveDuplicates Header:=xlYes, _
      Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    
+    Call ListObjectDeleteEmptyRows(Me.ListObjects("DATA_SOURCES"))
+    Call ListObjectDeleteEmptyRows(Me.ListObjects("VARIABLES"))
         
 Exit_sub:
     Erase arrDS
@@ -955,9 +994,9 @@ Private Sub GetListOfDS()
         Err.Clear
         On Error GoTo 0
         ' arrDS = tmpCrossTabs
-        ReDim arrDS(UBound(tmpCrossTabs, 1) - 1, 1)
+        ReDim arrDS(UBound(tmpCrossTabs, 1), 1)
         
-        For i = 0 To UBound(tmpCrossTabs, 1) - 1
+        For i = 1 To UBound(tmpCrossTabs, 1)
             arrDS(i, enumDataSource.DS_ID) = tmpCrossTabs(i, 3) ' data source ID
             
             On Error Resume Next
@@ -970,5 +1009,20 @@ Private Sub GetListOfDS()
     End If
 
 End Sub
+
+Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
+    Dim i As Long
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+    i = 1
+    Do While i <= lo.ListRows.Count
+        If WorksheetFunction.CountA(lo.ListRows(i).Range) = 0 Then
+            lo.ListRows(i).Delete
+            i = i - 1
+        End If
+        i = i + 1
+    Loop
+End Sub
+
+
 
 
