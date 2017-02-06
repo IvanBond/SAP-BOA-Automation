@@ -264,8 +264,7 @@ Function Refresh() As Boolean
         
     Refresh = True
     
-    
-    
+        
 Exit_Function:
     Application.StatusBar = "Disabling BOA..."
     Call DisableBOA
@@ -948,10 +947,21 @@ Next_DS:
     
     Call ListObjectDeleteEmptyRows(Me.ListObjects("DATA_SOURCES"))
     Call ListObjectDeleteEmptyRows(Me.ListObjects("VARIABLES"))
-        
+    
+    Application.StatusBar = "Logging Off..."
+    
+    Application.EnableEvents = False
+    Call Run("SAPLogOff", False) ' disconnect
+    Application.EnableEvents = True
+    
+    
+    
 Exit_sub:
     Erase arrDS
     Application.Cursor = xlDefault
+    Application.StatusBar = "Disabling BOA..."
+    Call DisableBOA
+    
     Application.StatusBar = vbNullString
     Application.ScreenUpdating = True
     Exit Sub
@@ -1022,7 +1032,5 @@ Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
         i = i + 1
     Loop
 End Sub
-
-
 
 
