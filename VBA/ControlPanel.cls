@@ -53,6 +53,8 @@ Enum enumDataSource ' used to reference to elements of arrDS array
     DS_MacrosAfter = 5
     DS_Client = 6
 End Enum
+
+Dim Dummy As Integer
 '
 
 Private Sub DefineGlobalVariables()
@@ -86,6 +88,8 @@ Function Refresh() As Boolean
     Dim arrMacrosBefore
     Dim arrMacrosAfter
     Dim arrMacrosAfterDSRefresh
+    Dim Attempt As Long
+    Dim bYetAnotherAttempt As Boolean
     
     On Error GoTo ErrHandler
     
@@ -94,6 +98,7 @@ Function Refresh() As Boolean
     
     Application.StatusBar = "Defining global variables..."
     Call DefineGlobalVariables
+    Call DefineNamedRangeScope
     
     Application.StatusBar = "Enabling BOA..."
     Call EnableBOA
@@ -125,7 +130,8 @@ Function Refresh() As Boolean
     
     Application.StatusBar = "Logging On..."
     If Not LogOn_DataSources Then
-        Err.Raise 21, "Refresh", "Couldn't LogOn"
+        Debug.Print "Couldn't LogOn"
+        'Err.Raise 21, "Refresh", "Couldn't LogOn"
         GoTo ErrHandler
     End If
     
@@ -138,18 +144,34 @@ Function Refresh() As Boolean
         ' array elements are ordered
         ' macro refreshes only those that enabled
         If arrDS(i, 1) = "Y" Then
+            Attempt = 0 ' attempt to refresh in case of delay (if no new data)
+            bYetAnotherAttempt = False
+
+Start_Refresh:
+            On Error GoTo ErrHandler
+            
+            ' if another attempt - we have to logon again
+            If bYetAnotherAttempt Then
+                Application.StatusBar = "Logging On..."
+                If Not LogOn_DataSources Then
+                    Debug.Print "Couldn't LogOn"
+                    'Err.Raise 21, "Refresh", "Couldn't LogOn"
+                    GoTo ErrHandler
+                End If
+            End If
             
             ' if within one Scope we should refresh several data sources with different languages
             ' e.g. everything is available in local language except one data source, which should be refreshed in EN
             If bMultiLogonMode Then
-                If i = 1 Then
+                If i = 1 Then ' if first data source
                 ' logon with specified Language
                     Application.StatusBar = "Logging On " & arrDS(i, enumDataSource.DS_ID)
                     If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), "100", arrDS(i, enumDataSource.DS_User), _
                             GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
                             arrDS(i, enumDataSource.DS_Language)) = 0 Then
                         
-                        Err.Raise 22, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                        Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                        'Err.Raise 22, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                         GoTo ErrHandler
                         ' couldn't logon
                     End If
@@ -161,7 +183,9 @@ Function Refresh() As Boolean
                         If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), "100", arrDS(i, enumDataSource.DS_User), _
                                 GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
                                 arrDS(i, enumDataSource.DS_Language)) = 0 Then
-                            Err.Raise 23, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                            
+                            Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                            'Err.Raise 23, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                             GoTo ErrHandler
                         End If
                     End If
@@ -169,7 +193,8 @@ Function Refresh() As Boolean
                 
                 Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
                 If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
-                    Err.Raise 24, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    'Err.Raise 24, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
                     GoTo ErrHandler
                 End If
             Else
@@ -177,20 +202,26 @@ Function Refresh() As Boolean
                 Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
                 If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
                     ' debug
-                    Err.Raise 25, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    'Err.Raise 25, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
                     GoTo ErrHandler
                     ' write log - couldn't refresh Data source XXX
+                Else
+                    Application.StatusBar = vbNullString
                 End If
             End If
             
-            Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
-            If Not ApplyScopeFilters(ThisWorkbook.Names("SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
-                Err.Raise 28, "Refresh", "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
-                GoTo ErrHandler
+            If Not bYetAnotherAttempt Then
+                Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
+                If Not ApplyScopeFilters(ThisWorkbook.Names("SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                    Debug.Print "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    'Err.Raise 28, "Refresh", "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    GoTo ErrHandler
+                End If
             End If
-
+            
             ' refresh report
-            Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID)
+            Application.StatusBar = "Turning On RefreshBehavior for data source " & arrDS(i, enumDataSource.DS_ID)
             Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
             Call Run("SAPSetRefreshBehaviour", "On") ' trigger RefreshData
             
@@ -216,15 +247,53 @@ Function Refresh() As Boolean
             For m = 0 To UBound(arrMacrosAfterDSRefresh)
                 On Error Resume Next
                 Application.StatusBar = "Executing macro " & Trim(arrMacrosAfterDSRefresh(m)) & "..."
-                Run Trim(arrMacrosAfterDSRefresh(m))
+                Application.Run "ControlPanel." & Trim(arrMacrosAfterDSRefresh(m))
                 If Err.Number <> 0 Then
                     Debug.Print "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
-                    Err.Raise 26, "Refresh", "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
+                    ' Err.Raise 26, "Refresh", "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
                     GoTo ErrHandler
                 End If
                 On Error GoTo 0
                 Application.StatusBar = "Calculating..."
                 Application.Calculate
+                Application.StatusBar = vbNullString
+                
+                ' user could call a sub, which change CONTROL_PANEL_DELAY cell value
+                ' check it - Check if no new data
+                If NamedRangesScope.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
+                    ' check if have attempts
+                    ' starts from 0 for each data source
+                    Attempt = Attempt + 1
+                    If Attempt > NamedRangesScope.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
+                        Debug.Print "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has no new data."
+                        'Err.Raise 1, "Refresh", "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has not new data."
+                        GoTo ErrHandler
+                    Else
+                        ' if trigger - wait
+                        ' log off to prevent kick from server
+                        Application.StatusBar = "Logging Off..."
+                        Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
+                        Call Run("SAPLogOff", False) ' disconnect
+                        Application.EnableEvents = True
+                        
+                        'Application.StatusBar = "Delay starting from " & Format(Now(), "yyyy-MM-dd hh:mm") & " for " _
+                            & CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value) & " min"
+                        
+                        Application.StatusBar = "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
+                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                        
+                        Debug.Print "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
+                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                                
+                        Application.Wait (Now() + TimeValue("00:" & Right("0" & _
+                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00"))
+                        bYetAnotherAttempt = True
+                        ' refresh same data source again - and make same check again
+                        GoTo Start_Refresh
+                        
+                    End If
+                End If
+                
             Next m ' next macro
         End If
         
@@ -249,7 +318,7 @@ Function Refresh() As Boolean
         Run Trim(arrMacrosAfter(i))
         If Err.Number <> 0 Then
             Debug.Print "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
-            Err.Raise 27, "Refresh", "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
+            'Err.Raise 27, "Refresh", "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
             GoTo ErrHandler
         End If
         On Error GoTo 0
@@ -263,10 +332,11 @@ Function Refresh() As Boolean
         FormatNumber(Round((Now() - StartPoint) * 3600 * 24, 0) Mod 60, 0) & "s")
         
     Refresh = True
-    
-        
+            
 Exit_Function:
+    On Error Resume Next
     Application.StatusBar = "Disabling BOA..."
+    Call LogOffBOA ' just in case
     Call DisableBOA
 
     Application.EnableEvents = True
@@ -277,9 +347,10 @@ Exit_Function:
     
 ErrHandler:
     ' send email?
-    Debug.Print Err.Number & ": " & Err.Description
-    Err.Clear
-    On Error GoTo 0
+    If Err.Number <> 0 Then
+        Debug.Print Err.Number & ": " & Err.Description
+        Err.Clear
+    End If
     GoTo Exit_Function
     Resume
 End Function
@@ -807,6 +878,11 @@ Sub Collect_Variables()
                 'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
                 Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
                 
+                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                    r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                End If
+                
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, 1) ' Sheet Name
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source Name").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
@@ -834,6 +910,11 @@ Sub Collect_Variables()
                         'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                         Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                         
+                        If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                        End If
+                        
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                         r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
                         
@@ -848,6 +929,11 @@ Sub Collect_Variables()
                             'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                             Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                             
+                            If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                    "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                            End If
+                        
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                             r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
                             
@@ -863,6 +949,12 @@ Sub Collect_Variables()
                 ' if no variables in Data Source
                     ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                     Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                    
+                    If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                            "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                    End If
+                        
                     r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                     r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
                     r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
@@ -887,6 +979,12 @@ Sub Collect_Variables()
                         ' 1-dimensional - only 1 variable
                         ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                         Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                        
+                        If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                        End If
+                        
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                         r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
                         
@@ -906,6 +1004,12 @@ Sub Collect_Variables()
                             If arrFilters(Fil, 1) <> "Measures" Then
                                 'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                                 Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                                
+                                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                End If
+                                
                                 r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                                 r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
                                 
@@ -954,9 +1058,8 @@ Next_DS:
     Call Run("SAPLogOff", False) ' disconnect
     Application.EnableEvents = True
     
-    
-    
 Exit_sub:
+    On Error Resume Next
     Erase arrDS
     Application.Cursor = xlDefault
     Application.StatusBar = "Disabling BOA..."
@@ -984,7 +1087,14 @@ Private Sub GetListOfDS()
     tmpCrossTabs = Application.Run("SAPListOf", "CROSSTABS")
     
     On Error Resume Next
-    If Not IsArray(tmpCrossTabs) Then Exit Sub
+    If Not IsArray(tmpCrossTabs) Then
+        MsgBox "Cannot find any BOA Data Source in this workbook." & vbCrLf _
+            & "Such issue were noticed when BO Analysis addin cannot initialize itself." & vbCrLf _
+            & "If you are sure that have Data Sources in this workbook - " & vbCrLf _
+            & "save this file, close Excel completely, check that no Excel process in Task Manager," & vbCrLf _
+            & "open your file and try again."
+        Exit Sub
+    End If
     Debug.Print tmpCrossTabs(1, 1) ' check if it is 2-dim array (when only 1 DS - response is 1-dim array)
     
     If Err.Number <> 0 Then
@@ -1010,7 +1120,7 @@ Private Sub GetListOfDS()
             arrDS(i, enumDataSource.DS_ID) = tmpCrossTabs(i, 3) ' data source ID
             
             On Error Resume Next
-            arrDS(i, 1) = Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
+            arrDS(i, 1) = ThisWorkbook.Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
             ' not 100% precise method, can fail if user rename NamedRange
             Err.Clear
             On Error GoTo 0
@@ -1031,6 +1141,16 @@ Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
         End If
         i = i + 1
     Loop
+End Sub
+
+Sub FakeCheckIfNoData()
+' use this sub to test how Delay Functionality works
+    If Dummy = 0 Then
+        ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
+        Dummy = 1
+    Else
+        ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
+    End If
 End Sub
 
 
