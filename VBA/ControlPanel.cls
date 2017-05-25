@@ -16,6 +16,10 @@ Option Compare Text
 ' https://linkedin.com/in/bondarenkoivan/en
 ' Big Thanks to Andres Merino for ideas and testing!
 
+' update 2017-05-24
+' now macro handles cases with SAPSetVariables only
+' no need to refresh twice in such cases
+
 ' declaration of function that is used in Function CreatePath
 ' possibly will be used for logging
 #If VBA7 Then
@@ -35,6 +39,7 @@ Public LogFile As String
 Public objFSO As Object
 Public objLog As Object
 Dim arrDS ' array for data sources
+Dim currentDS As String ' current data source
 
 Dim bMultiLogonMode As Boolean
 ' special mode when refresh is done data source be data source
@@ -52,9 +57,10 @@ Enum enumDataSource ' used to reference to elements of arrDS array
     DS_User = 4
     DS_MacrosAfter = 5
     DS_Client = 6
+    DS_CalculateAfter = 7
 End Enum
 
-Dim Dummy As Integer
+Dim dummy As Integer
 '
 
 Private Sub DefineGlobalVariables()
@@ -69,11 +75,13 @@ Private Sub DefineGlobalVariables()
 End Sub
 
 Private Sub DefineNamedRangeScope()
+    ' TODO: switch all named ranges to ControlPanel sheet scope
+    ' no more named ranges on Workbook level
     On Error Resume Next
     ' if user copy ControlPanel several times and do not delete #REF named ranges after deletion of ControlPanel
     ' Excel makes ControlPanel's named ranges in scope of worksheet
-    Debug.Print ThisWorkbook.Names("SCOPE").RefersToRange.Address
-    If Err.Number <> 0 Then
+    Debug.Print Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Address
+    If Err.Number = 0 Then
         Set NamedRangesScope = Me
     Else
         Set NamedRangesScope = ThisWorkbook
@@ -90,6 +98,7 @@ Function Refresh() As Boolean
     Dim arrMacrosAfterDSRefresh
     Dim Attempt As Long
     Dim bYetAnotherAttempt As Boolean
+    Dim bSAPSetVariablesOnly As Boolean ' when scope filters contains no SAPSetFilter command
     
     On Error GoTo ErrHandler
     
@@ -124,20 +133,23 @@ Function Refresh() As Boolean
             GoTo ErrHandler
         End If
         On Error GoTo 0
-        Application.StatusBar = "Calculating..."
-        Application.Calculate
+        
+        ' ? do we need to calc after each macro? - macro owner decides
+        ' if needed - user will have to add it in his/her macro
+        'Application.StatusBar = "Calculating..."
+        'Application.Calculate
     Next m
     
-    Application.StatusBar = "Logging On..."
+    Application.StatusBar = "Log On..."
     If Not LogOn_DataSources Then
         Debug.Print "Couldn't LogOn"
-        'Err.Raise 21, "Refresh", "Couldn't LogOn"
         GoTo ErrHandler
     End If
     
     ' initial calculate
     Application.StatusBar = "Calculating..."
     Application.Calculate
+    Application.StatusBar = vbNullString
     
     ' refresh all enabled data sources in specified order
     For i = 1 To UBound(arrDS, 1)
@@ -146,16 +158,17 @@ Function Refresh() As Boolean
         If arrDS(i, 1) = "Y" Then
             Attempt = 0 ' attempt to refresh in case of delay (if no new data)
             bYetAnotherAttempt = False
-
+            bSAPSetVariablesOnly = IsSAPSetVariablesOnly(CStr(arrDS(i, enumDataSource.DS_ID)))
+            currentDS = CStr(arrDS(i, enumDataSource.DS_ID))
+            
 Start_Refresh:
             On Error GoTo ErrHandler
-            
+                                    
             ' if another attempt - we have to logon again
             If bYetAnotherAttempt Then
-                Application.StatusBar = "Logging On..."
+                Application.StatusBar = "Log On..."
                 If Not LogOn_DataSources Then
                     Debug.Print "Couldn't LogOn"
-                    'Err.Raise 21, "Refresh", "Couldn't LogOn"
                     GoTo ErrHandler
                 End If
             End If
@@ -171,7 +184,6 @@ Start_Refresh:
                             arrDS(i, enumDataSource.DS_Language)) = 0 Then
                         
                         Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
-                        'Err.Raise 22, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                         GoTo ErrHandler
                         ' couldn't logon
                     End If
@@ -185,48 +197,79 @@ Start_Refresh:
                                 arrDS(i, enumDataSource.DS_Language)) = 0 Then
                             
                             Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
-                            'Err.Raise 23, "Refresh", "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                             GoTo ErrHandler
                         End If
                     End If
                 End If
                 
-                Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
-                If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
-                    Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    'Err.Raise 24, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    GoTo ErrHandler
+                ' after Logon - Initial Refresh (for SAPSetFilter)
+                If Not bSAPSetVariablesOnly Then
+                    ' if SAPSetFilter is used then we need "Initial Refresh" before ApplyScopeFilters
+                    Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
+                    If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
+                        Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                        GoTo ErrHandler
+                    End If
+                End If ' not bSAPSetVariablesOnly
+            Else
+                ' not bMultiLogonMode
+                ' logon was done during LogOn_DataSources
+                
+                If Not bSAPSetVariablesOnly Then
+                    ' if SAPSetFilter is used then we need "Initial Refresh" before ApplyScopeFilters
+                    Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
+                    If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
+                        ' debug
+                        Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                        GoTo ErrHandler
+                        ' write log - couldn't refresh Data source XXX
+                    Else
+                        Application.StatusBar = vbNullString
+                    End If
+                End If ' not bSAPSetVariablesOnly
+                
+            End If
+            
+            ' set filters / variables
+            If Not bYetAnotherAttempt Then
+                ' if first run - we have to apply filters / variables
+                If bSAPSetVariablesOnly Then
+                    ' if bSAPSetVariablesOnly - then Variables will be set by corresponding callback
+                    Application.StatusBar = "Registering callback BeforeFirstPromptsDisplay..."
+                    Call Callback_BeforeFirstPromptsDisplay_Reg
+                    
+                    ' The Default refresh - only SAPSetVariables, first refresh
+                    Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID) & "..."
+                    Call Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
+                    
+                    Application.StatusBar = "Unregistering callback BeforeFirstPromptsDisplay..."
+                    Call Callback_BeforeFirstPromptsDisplay_UnReg
+                Else
+                    ' if it is first Refresh - call ApplyScopeFilters
+                    Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
+                    
+                    ' during ApplyScopeFilters macro will
+                    ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
+                    If Not ApplyScopeFilters(NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                        Debug.Print "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                        GoTo ErrHandler
+                    End If
+                End If ' bSAPSetVariablesOnly
+            End If
+            
+            ' for all next attempts no need to set Variables or Filters - just refresh
+            ' refresh report
+            If bSAPSetVariablesOnly Then
+                If bYetAnotherAttempt Then
+                    Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID) & "..."
+                    Call Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
                 End If
             Else
-                ' logon was done during Log_On_Systems
-                Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
-                If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
-                    ' debug
-                    Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    'Err.Raise 25, "Refresh", "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    GoTo ErrHandler
-                    ' write log - couldn't refresh Data source XXX
-                Else
-                    Application.StatusBar = vbNullString
-                End If
+            ' if SAPSetFilter, then ApplyScopeFilters was executed, therefore we have to turn On default addin behavior
+                Application.StatusBar = "Turning On RefreshBehavior for data source " & arrDS(i, enumDataSource.DS_ID)
+                Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
+                Call Run("SAPSetRefreshBehaviour", "On") ' trigger RefreshData
             End If
-            
-            If Not bYetAnotherAttempt Then
-                Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
-                If Not ApplyScopeFilters(ThisWorkbook.Names("SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
-                    Debug.Print "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    'Err.Raise 28, "Refresh", "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
-                    GoTo ErrHandler
-                End If
-            End If
-            
-            ' refresh report
-            Application.StatusBar = "Turning On RefreshBehavior for data source " & arrDS(i, enumDataSource.DS_ID)
-            Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
-            Call Run("SAPSetRefreshBehaviour", "On") ' trigger RefreshData
-            
-            Application.StatusBar = "Calculating..."
-            Application.Calculate ' trigger calculation of formulas. Possibly, next report has filter based on refreshed report
             
             If bMultiLogonMode Then
                 ' if next DS has different language - logoff
@@ -234,7 +277,7 @@ Start_Refresh:
                     If arrDS(i, enumDataSource.DS_Language) <> arrDS(i + 1, enumDataSource.DS_Language) Then
                         Application.StatusBar = "Logging Off..."
                         Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
-                        Call Run("SAPLogOff", False) ' disconnect
+                        Call LogOffBOA
                         Application.EnableEvents = True
                     End If
                 End If
@@ -250,13 +293,12 @@ Start_Refresh:
                 Application.Run "ControlPanel." & Trim(arrMacrosAfterDSRefresh(m))
                 If Err.Number <> 0 Then
                     Debug.Print "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
-                    ' Err.Raise 26, "Refresh", "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
                     GoTo ErrHandler
                 End If
                 On Error GoTo 0
-                Application.StatusBar = "Calculating..."
-                Application.Calculate
-                Application.StatusBar = vbNullString
+                'Application.StatusBar = "Calculating..."
+                'Application.Calculate
+                'Application.StatusBar = vbNullString
                 
                 ' user could call a sub, which change CONTROL_PANEL_DELAY cell value
                 ' check it - Check if no new data
@@ -266,14 +308,13 @@ Start_Refresh:
                     Attempt = Attempt + 1
                     If Attempt > NamedRangesScope.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
                         Debug.Print "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has no new data."
-                        'Err.Raise 1, "Refresh", "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has not new data."
                         GoTo ErrHandler
                     Else
                         ' if trigger - wait
                         ' log off to prevent kick from server
                         Application.StatusBar = "Logging Off..."
                         Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
-                        Call Run("SAPLogOff", False) ' disconnect
+                        Call LogOffBOA
                         Application.EnableEvents = True
                         
                         'Application.StatusBar = "Delay starting from " & Format(Now(), "yyyy-MM-dd hh:mm") & " for " _
@@ -297,14 +338,20 @@ Start_Refresh:
             Next m ' next macro
         End If
         
-        Application.StatusBar = "Calculating..."
-        Application.Calculate
+        ' calculate if user specified this parameter
+        If arrDS(i, enumDataSource.DS_CalculateAfter) = "Y" Then
+            Application.StatusBar = "Calculating..."
+            'Application.CalculationInterruptKey = xlNoKey
+            Application.Calculate ' trigger calculation of formulas. Possibly, next report has filter based on the refreshed report
+            'Application.CalculationInterruptKey = xlAnyKey
+            Application.StatusBar = vbNullString
+        End If
     Next i ' next Data source
     
     Application.StatusBar = "Logging Off..."
     
     Application.EnableEvents = False
-    Call Run("SAPLogOff", False) ' disconnect
+    Call LogOffBOA
     Application.EnableEvents = True
     
     arrMacrosAfter = Split(ThisWorkbook.Names("MACROS_AFTER").RefersToRange.Value, ",")
@@ -318,14 +365,15 @@ Start_Refresh:
         Run Trim(arrMacrosAfter(i))
         If Err.Number <> 0 Then
             Debug.Print "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
-            'Err.Raise 27, "Refresh", "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
             GoTo ErrHandler
         End If
         On Error GoTo 0
     Next m
     
+    ' resulting calculation
     Application.StatusBar = "Calculating..."
     Application.Calculate
+    Application.StatusBar = vbNullString
     
     ' Call Write_Log("END # Overall execution time # " & _
         Round((Now() - StartPoint) * 3600 * 24 / 60, 0) & "m " & _
@@ -336,8 +384,10 @@ Start_Refresh:
 Exit_Function:
     On Error Resume Next
     Application.StatusBar = "Disabling BOA..."
+    
     Call LogOffBOA ' just in case
-    Call DisableBOA
+    
+    'Call DisableBOA ' crashes Excel from time to time
 
     Application.EnableEvents = True
     Application.ScreenUpdating = True ' just in case
@@ -404,7 +454,7 @@ Private Function LogOn_DataSources() As Boolean
             ' check if several languages in Scope
             For r = 1 To .DataBodyRange.Rows.Count
                 If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
-                                ThisWorkbook.Names("SCOPE").RefersToRange.Value Then
+                                NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
                     
                     If sLanguage = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                     ' on first step - remember value in variable
@@ -701,7 +751,7 @@ Private Sub GetArrDS()
     On Error GoTo ErrHandler
     
     If Me.ListObjects("DATA_SOURCES").DataBodyRange Is Nothing Then Exit Sub
-    If ThisWorkbook.Names("SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
+    If NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
     
     If WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange, "=") > 0 Then
         Me.ListObjects("DATA_SOURCES").ListColumns("Order").Range.Select
@@ -711,14 +761,14 @@ Private Sub GetArrDS()
     
     ' amount of data sources in Scope
     n = WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange, _
-            ThisWorkbook.Names("SCOPE").RefersToRange.Value)
+            NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value)
     
-    ReDim arrDS(n, 6)
+    ReDim arrDS(n, 7) ' size must be equal to number of parameters
     For i = 1 To Me.ListObjects("DATA_SOURCES").DataBodyRange.Rows.Count
         ' fill array according to order of execution
     
         If Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
-            ThisWorkbook.Names("SCOPE").RefersToRange.Value Then
+            NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
             
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_ID) = _
                 Me.ListObjects("DATA_SOURCES").ListColumns("Data Source").DataBodyRange.Cells(i, 1)
@@ -728,8 +778,11 @@ Private Sub GetArrDS()
             
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_MacrosAfter) = _
                 Me.ListObjects("DATA_SOURCES").ListColumns("Macros After").DataBodyRange.Cells(i, 1)
-                
-            ' if empty - use General options
+            
+            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_CalculateAfter) = _
+                Me.ListObjects("DATA_SOURCES").ListColumns("Calculate After").DataBodyRange.Cells(i, 1)
+            
+            ' if empty settings - use General options
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_System) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("System").DataBodyRange.Cells(i, 1).Value = vbNullString, _
                     ThisWorkbook.Names("GENERAL_SYSTEM").RefersToRange.Value, _
@@ -766,24 +819,31 @@ ErrHandler:
 End Sub
 
 Private Sub Worksheet_Activate()
-    If ThisWorkbook.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        ThisWorkbook.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    If IsEmpty(NamedRangesScope) Then
+        DefineNamedRangeScope
     End If
-    If ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    End If
+    If NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
+        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
 Private Sub Worksheet_SelectionChange(ByVal Target As Range)
-    If ThisWorkbook.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        ThisWorkbook.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    If IsEmpty(NamedRangesScope) Then
+        DefineNamedRangeScope
     End If
-    If ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    End If
+    If NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
+        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
 Sub LogOffBOA()
+    On Error Resume Next
     Call Run("SAPLogOff", False) ' disconnect
 End Sub
 
@@ -827,6 +887,19 @@ Sub Collect_Variables()
     Dim sPassword As String
     Dim sSystem   As String
     Dim order As Long
+    Dim WhatToCollectResponse As String
+    
+AskWhatToCollect:
+    WhatToCollectResponse = InputBox("Please, specify what you want to collect:" & vbCrLf _
+        & "1 - Variables" & vbCrLf _
+        & "2 - Field (dimension) & Measure Filters" & vbCrLf _
+        & "3 - both", "What to collect?", "1")
+    
+    If WhatToCollectResponse = vbNullString Then
+        Exit Sub
+    ElseIf WhatToCollectResponse <> "1" And WhatToCollectResponse <> "2" And WhatToCollectResponse <> "3" Then
+        GoTo AskWhatToCollect
+    End If
     
     Application.Cursor = xlWait
     Application.ScreenUpdating = False
@@ -859,7 +932,7 @@ Sub Collect_Variables()
             
             If Not Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 
-                Application.StatusBar = "Loggin On..."
+                Application.StatusBar = "Log On..."
                 Call Application.Run("SapLogon", _
                     CStr(arrDS(i, enumDataSource.DS_ID)), _
                     NamedRangesScope.Names("GENERAL_CLIENT").RefersToRange.Value, _
@@ -897,35 +970,17 @@ Sub Collect_Variables()
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Order").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = order
                 order = order + 1
                 
-                ' Get Variables
-                arrVar = Application.Run("SAPListOfVariables", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING", "PROMPTS")
-                
-                If IsArray(arrVar) Then
-                    On Error Resume Next
-                    Debug.Print arrVar(1, 1)
-                    If Err.Number <> 0 Then
-                        Err.Clear
-                        On Error GoTo 0
-                        ' 1-dimensional - only 1 variable
-                        'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
-                        
-                        If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
-                        End If
-                        
-                        r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
-                        
-                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(1), "TECHNICALNAME")
-                            
-                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(1)
-                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(2)
-                    Else
-                        ' two-dimentional
-                        For Var = LBound(arrVar) To UBound(arrVar)
+                If WhatToCollectResponse = "1" Or WhatToCollectResponse = "3" Then
+                    ' Get Variables
+                    arrVar = Application.Run("SAPListOfVariables", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING", "PROMPTS")
+                    
+                    If IsArray(arrVar) Then
+                        On Error Resume Next
+                        Debug.Print arrVar(1, 1)
+                        If Err.Number <> 0 Then
+                            Err.Clear
+                            On Error GoTo 0
+                            ' 1-dimensional - only 1 variable
                             'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                             Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                             
@@ -933,50 +988,39 @@ Sub Collect_Variables()
                                 r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
                                     "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
                             End If
-                        
+                            
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                             r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                    Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(Var, 1), "TECHNICALNAME")
+                                    Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(1), "TECHNICALNAME")
                                 
-                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(Var, 1)
-                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(Var, 2)
-                        Next Var
-                    End If
-                    
-                Else
-                ' if no variables in Data Source
-                    ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
-                    
-                    If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                            "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
-                    End If
+                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(1)
+                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(2)
+                        Else
+                            ' two-dimentional
+                            For Var = LBound(arrVar) To UBound(arrVar)
+                                'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                                
+                                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                End If
+                            
+                                r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                                r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                                
+                                r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                        Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(Var, 1), "TECHNICALNAME")
+                                    
+                                r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(Var, 1)
+                                r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(Var, 2)
+                            Next Var
+                        End If
                         
-                    r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                    r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
-                    r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
-                    r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Not applicable"
-                    r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
-                End If
-                
-                ' Get Filters
-                ' arrFilters = Application.Run("SAPListOfEffectiveFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
-                ' Effective filters also includes variables
-                
-                ' dynamic filters includes dimensions and measures
-                arrFilters = Application.Run("SAPListOfDynamicFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
-                arrDimensions = Application.Run("SAPListOfDimensions", arrDS(i, enumDataSource.DS_ID))
-                
-                If IsArray(arrFilters) Then
-                    On Error Resume Next
-                    Debug.Print arrFilters(1, 1)
-                    If Err.Number <> 0 Then
-                        Err.Clear
-                        On Error GoTo 0
-                        ' 1-dimensional - only 1 variable
+                    Else ' If IsArray(arrVar) Then
+                        ' if no variables in Data Source
                         ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                         Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                         
@@ -986,52 +1030,83 @@ Sub Collect_Variables()
                         End If
                         
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
-                        
-                        For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
-                             If arrDimensions(Dimen, 2) = arrFilters(1) Then
-                                r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
-                                Exit For
-                             End If
-                        Next Dimen
-                            
-                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(1)
-                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(2)
-                        
-                    Else
-                        ' 2-deminsional
-                        For Fil = LBound(arrFilters) To UBound(arrFilters)
-                            If arrFilters(Fil, 1) <> "Measures" Then
-                                'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
-                                
-                                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
-                                End If
-                                
-                                r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                                r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
-                                
-                                For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
-                                     If arrDimensions(Dimen, 2) = arrFilters(Fil, 1) Then
-                                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
-                                        Exit For
-                                     End If
-                                Next Dimen
-                                    
-                                r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(Fil, 1)
-                                r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(Fil, 2)
-                            End If ' if measures
-                        Next Fil
-                    
-                    
+                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
+                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Not applicable"
+                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
                     End If
-                Else
+                End If ' WhatToCollectResponse = 1 or 3
                 
-                End If ' If IsArray(arrFilters)
-                
-            Else
+                If WhatToCollectResponse = "2" Or WhatToCollectResponse = "3" Then
+                    ' Get Filters
+                    ' arrFilters = Application.Run("SAPListOfEffectiveFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
+                    ' Effective filters also includes variables
+                    
+                    ' dynamic filters includes dimensions and measures
+                    arrFilters = Application.Run("SAPListOfDynamicFilters", arrDS(i, enumDataSource.DS_ID), "INPUT_STRING")
+                    arrDimensions = Application.Run("SAPListOfDimensions", arrDS(i, enumDataSource.DS_ID))
+                    
+                    If IsArray(arrFilters) Then
+                        On Error Resume Next
+                        Debug.Print arrFilters(1, 1)
+                        If Err.Number <> 0 Then
+                            Err.Clear
+                            On Error GoTo 0
+                            ' 1-dimensional - only 1 variable
+                            ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                            
+                            If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                    "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                            End If
+                            
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                            r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                            
+                            For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
+                                 If arrDimensions(Dimen, 2) = arrFilters(1) Then
+                                    r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                    Exit For
+                                 End If
+                            Next Dimen
+                                
+                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(1)
+                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(2)
+                            
+                        Else
+                            ' 2-deminsional
+                            For Fil = LBound(arrFilters) To UBound(arrFilters)
+                                If arrFilters(Fil, 1) <> "Measures" Then
+                                    'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
+                                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                                    
+                                    If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                            "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                    End If
+                                    
+                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                                    
+                                    For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
+                                         If arrDimensions(Dimen, 2) = arrFilters(Fil, 1) Then
+                                            r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                            Exit For
+                                         End If
+                                    Next Dimen
+                                        
+                                    r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(Fil, 1)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(Fil, 2)
+                                End If ' if measures
+                            Next Fil
+                                            
+                        End If
+                    Else
+                    
+                    End If ' If IsArray(arrFilters)
+                End If
+            Else ' If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 ' write that DS is not active
                 
                 ' MsgBox "Please, refresh data source " & arrDS(i, 1)
@@ -1055,15 +1130,15 @@ Next_DS:
     Application.StatusBar = "Logging Off..."
     
     Application.EnableEvents = False
-    Call Run("SAPLogOff", False) ' disconnect
+    Call LogOffBOA
     Application.EnableEvents = True
     
 Exit_sub:
     On Error Resume Next
     Erase arrDS
     Application.Cursor = xlDefault
-    Application.StatusBar = "Disabling BOA..."
-    Call DisableBOA
+    'Application.StatusBar = "Disabling BOA..."
+    'Call DisableBOA
     
     Application.StatusBar = vbNullString
     Application.ScreenUpdating = True
@@ -1077,6 +1152,11 @@ ErrHandler:
     GoTo Exit_sub
     Resume ' for debug
 End Sub
+
+' ***********************************************************************************
+' *                             COLLECTION OF VARIABLES END                         *
+' *                                                                                 *
+' ***********************************************************************************
 
 Private Sub GetListOfDS()
 ' Sub for "collect variables" part
@@ -1145,12 +1225,107 @@ End Sub
 
 Sub FakeCheckIfNoData()
 ' use this sub to test how Delay Functionality works
-    If Dummy = 0 Then
+    If dummy = 0 Then
         ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
-        Dummy = 1
+        dummy = 1
     Else
         ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
     End If
 End Sub
+
+Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
+' callback is triggered on Data Source Refresh
+' at than point we know Scope and 'currentDS' stores DS ID
+    Dim arr_var_scope
+    Dim arr_var_ds
+    Dim arr_var_command
+    Dim arr_var_field
+    Dim arr_var_value
+    Dim arr_var_ref_type
+    Dim i As Long
+    Dim variable_row As Long
+    Dim arrVariableValue
+    Dim sVariableValue As String
+    Dim scope As String
+        
+    Debug.Print Now, "Callback_BeforeFirstPromptsDisplay"
+    scope = NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value
+    
+    ' define arrays with Variables table columns - faster then read each cell
+    With Me.ListObjects("VARIABLES")
+        arr_var_scope = Get_Array_From_Range(.ListColumns("Scope").DataBodyRange.Address(external:=True))
+        arr_var_ds = Get_Array_From_Range(.ListColumns("Data Source").DataBodyRange.Address(external:=True))
+        arr_var_command = Get_Array_From_Range(.ListColumns("Command").DataBodyRange.Address(external:=True))
+        arr_var_field = Get_Array_From_Range(.ListColumns("Field").DataBodyRange.Address(external:=True))
+        arr_var_value = Get_Array_From_Range(.ListColumns("Value").DataBodyRange.Address(external:=True))
+        arr_var_ref_type = Get_Array_From_Range(.ListColumns("Reference Type").DataBodyRange.Address(external:=True))
+    End With
+              
+    ' Set Variables
+    For variable_row = 1 To UBound(arr_var_ds)
+        If arr_var_scope(variable_row, 1) = scope And arr_var_ds(variable_row, 1) = currentDS Then
+            If arr_var_command(variable_row, 1) = "SAPSetVariable" Then
+                If arr_var_ref_type(variable_row, 1) = "Range" Then
+                    
+                    ' easier then INPUT_STRING_AS_ARRAY?
+                    arrVariableValue = Get_Array_From_Range(Application.Range(CStr(arr_var_value(variable_row, 1))).Address(external:=True))
+                    For i = 1 To UBound(arrVariableValue)
+                        sVariableValue = sVariableValue & "; " & arrVariableValue(i, 1)
+                    Next i
+                    sVariableValue = Mid(sVariableValue, 3)
+                    
+                    '    sVariableValue = "1; 2; 3; .... 90000; ... "
+                    '    sVariableValue = "!1; !2; !3; .... !90000; ... "
+                Else
+                    sVariableValue = CStr(arr_var_value(variable_row, 1))
+                End If
+                
+                Me.ListObjects("VARIABLES").ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                Me.ListObjects("VARIABLES").ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                
+                If Run(arr_var_command(variable_row, 1), _
+                        arr_var_field(variable_row, 1), _
+                        sVariableValue, _
+                        "INPUT_STRING", _
+                        arr_var_ds(variable_row, 1)) = 0 Then
+                    
+                    Debug.Print "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    GoTo Exit_sub
+                End If
+                sVariableValue = vbNullString
+            End If ' var command
+        End If ' var scope and data source
+    Next variable_row
+        
+Exit_sub:
+    Exit Sub
+
+ErrHandler:
+    Err.Clear
+    On Error GoTo 0
+    GoTo Exit_sub
+End Sub
+
+Private Sub Callback_BeforeFirstPromptsDisplay_Reg()
+    Dim iRet As Integer
+    Call Application.Run("SAPExecuteCommand", "RegisterCallback", "BeforeFirstPromptsDisplay", "ControlPanel.Callback_BeforeFirstPromptsDisplay")
+    Debug.Print Now, "Callback_BeforeFirstPromptsDisplay_Reg", iRet
+End Sub
+
+Private Sub Callback_BeforeFirstPromptsDisplay_UnReg()
+    Dim iRet As Integer
+    iRet = Application.Run("SAPExecuteCommand", "UnRegisterCallback", "BeforeFirstPromptsDisplay", "ControlPanel.Callback_BeforeFirstPromptsDisplay")
+    Debug.Print Now, "Callback_BeforeFirstPromptsDisplay_UnReg", iRet
+End Sub
+
+Private Function IsSAPSetVariablesOnly(ds As String) As Boolean
+    IsSAPSetVariablesOnly = True ' by default
+    With Me.ListObjects("VARIABLES")
+        If Not .DataBodyRange Is Nothing Then
+            IsSAPSetVariablesOnly = (WorksheetFunction.CountIfs(.ListColumns("Data Source").DataBodyRange, ds, _
+                    .ListColumns("Command").DataBodyRange, "SAPSetFilter") = 0)
+        End If
+    End With
+End Function
 
 
