@@ -74,19 +74,20 @@ Private Sub DefineGlobalVariables()
         
 End Sub
 
-Private Sub DefineNamedRangeScope()
-    ' TODO: switch all named ranges to ControlPanel sheet scope
-    ' no more named ranges on Workbook level
-    On Error Resume Next
-    ' if user copy ControlPanel several times and do not delete #REF named ranges after deletion of ControlPanel
-    ' Excel makes ControlPanel's named ranges in scope of worksheet
-    Debug.Print Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Address
-    If Err.Number = 0 Then
-        Set NamedRangesScope = Me
-    Else
-        Set NamedRangesScope = ThisWorkbook
-    End If
-End Sub
+'Private Sub DefineNamedRangeScope()
+'    Set NamedRangesScope = Me
+'    ' all needed named ranged are in ControlPanel sheet scope
+'
+'    'On Error Resume Next
+'    ' if user copy ControlPanel several times and do not delete #REF named ranges after deletion of ControlPanel
+'    ' Excel makes ControlPanel's named ranges in scope of worksheet
+'    'Debug.Print Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Address
+'    'If Err.Number = 0 Then
+'    '    Set NamedRangesScope = Me
+'    'Else
+'    '    Set NamedRangesScope = ThisWorkbook
+'    'End If
+'End Sub
 
 Function Refresh() As Boolean
     Dim StartPoint As Double
@@ -107,7 +108,7 @@ Function Refresh() As Boolean
     
     Application.StatusBar = "Defining global variables..."
     Call DefineGlobalVariables
-    Call DefineNamedRangeScope
+'    Call DefineNamedRangeScope
     
     Application.StatusBar = "Enabling BOA..."
     Call EnableBOA
@@ -123,7 +124,7 @@ Function Refresh() As Boolean
     End If
     
     Application.StatusBar = "Executing macros before Refresh..."
-    arrMacrosBefore = Split(ThisWorkbook.Names("MACROS_BEFORE").RefersToRange.Value, ",")
+    arrMacrosBefore = Split(Me.Names("MACROS_BEFORE").RefersToRange.Value, ",")
     For m = 0 To UBound(arrMacrosBefore)
         On Error Resume Next
         Application.StatusBar = "Executing macro " & Trim(arrMacrosBefore(i)) & "..."
@@ -250,7 +251,7 @@ Start_Refresh:
                     
                     ' during ApplyScopeFilters macro will
                     ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
-                    If Not ApplyScopeFilters(NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                    If Not ApplyScopeFilters(Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
                         Debug.Print "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
                         GoTo ErrHandler
                     End If
@@ -302,11 +303,11 @@ Start_Refresh:
                 
                 ' user could call a sub, which change CONTROL_PANEL_DELAY cell value
                 ' check it - Check if no new data
-                If NamedRangesScope.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
+                If Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
                     ' check if have attempts
                     ' starts from 0 for each data source
                     Attempt = Attempt + 1
-                    If Attempt > NamedRangesScope.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
+                    If Attempt > Me.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
                         Debug.Print "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has no new data."
                         GoTo ErrHandler
                     Else
@@ -318,16 +319,16 @@ Start_Refresh:
                         Application.EnableEvents = True
                         
                         'Application.StatusBar = "Delay starting from " & Format(Now(), "yyyy-MM-dd hh:mm") & " for " _
-                            & CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value) & " min"
+                            & CStr(me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value) & " min"
                         
                         Application.StatusBar = "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
-                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
                         
                         Debug.Print "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
-                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
                                 
                         Application.Wait (Now() + TimeValue("00:" & Right("0" & _
-                                CStr(NamedRangesScope.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00"))
+                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00"))
                         bYetAnotherAttempt = True
                         ' refresh same data source again - and make same check again
                         GoTo Start_Refresh
@@ -354,9 +355,9 @@ Start_Refresh:
     Call LogOffBOA
     Application.EnableEvents = True
     
-    arrMacrosAfter = Split(ThisWorkbook.Names("MACROS_AFTER").RefersToRange.Value, ",")
+    arrMacrosAfter = Split(Me.Names("MACROS_AFTER").RefersToRange.Value, ",")
     
-    ThisWorkbook.Names("LAST_REFRESH_DATETIME").RefersToRange.Value = Now()
+    Me.Names("LAST_REFRESH_DATETIME").RefersToRange.Value = Now()
     
     Application.StatusBar = "Executing macros after Refresh..."
     
@@ -454,17 +455,17 @@ Private Function LogOn_DataSources() As Boolean
             ' check if several languages in Scope
             For r = 1 To .DataBodyRange.Rows.Count
                 If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
-                                NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
+                                Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
                     
                     If sLanguage = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                     ' on first step - remember value in variable
                         sLanguage = IIf(.ListColumns("Language").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                            ThisWorkbook.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
+                                            Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
                                             .ListColumns("Language").DataBodyRange.Cells(r, 1).Value)
                     Else
                     ' second and further steps - compare each row with value in variable
                         If sLanguage <> IIf(.ListColumns("Language").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                            ThisWorkbook.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
+                                            Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
                                             .ListColumns("Language").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -476,12 +477,12 @@ Private Function LogOn_DataSources() As Boolean
                     If sUser = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                     ' on first step - remember value in variable
                         sUser = IIf(.ListColumns("User").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value, _
+                                    Me.Names("GENERAL_USER").RefersToRange.Value, _
                                     .ListColumns("User").DataBodyRange.Cells(r, 1).Value)
                     Else
                     ' second and further steps - compare each row with value in variable
                         If sUser <> IIf(.ListColumns("User").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value, _
+                                    Me.Names("GENERAL_USER").RefersToRange.Value, _
                                     .ListColumns("User").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -494,12 +495,12 @@ Private Function LogOn_DataSources() As Boolean
                     If sClient = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                     ' on first step - remember value in variable
                         sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
                                     .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
                     Else
                     ' second and further steps - compare each row with value in variable
                         If sClient <> IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
                                     .ListColumns("Client").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -510,10 +511,10 @@ Private Function LogOn_DataSources() As Boolean
                     
                     ' Dictionary of Systems
                     sSystem = IIf(.ListColumns("System").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_SYSTEM").RefersToRange.Value, _
+                                    Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
                                         .ListColumns("System").DataBodyRange.Cells(r, 1).Value)
                     'sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    me.Names("GENERAL_CLIENT").RefersToRange.Value, _
                                         .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
                     If Not dicSystems.exists(sSystem & "+" & sClient) Then
                         dicSystems.Add sSystem & "+" & sClient, .ListColumns("Data Source").DataBodyRange.Cells(r, 1).Value
@@ -567,7 +568,7 @@ Private Function GetPassword(system As String, username As String) As String
     On Error GoTo ErrHandler
     If objFSO Is Nothing Then Set objFSO = CreateObject("Scripting.FileSystemObject")
     
-    Set objFile = objFSO.OpenTextFile(ThisWorkbook.Names("PASSWORDS_PATH").RefersToRange.Value, ForReading)
+    Set objFile = objFSO.OpenTextFile(Me.Names("PASSWORDS_PATH").RefersToRange.Value, ForReading)
     
     Do Until objFile.AtEndOfStream
         strLine = objFile.ReadLine
@@ -751,7 +752,7 @@ Private Sub GetArrDS()
     On Error GoTo ErrHandler
     
     If Me.ListObjects("DATA_SOURCES").DataBodyRange Is Nothing Then Exit Sub
-    If NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
+    If Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
     
     If WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange, "=") > 0 Then
         Me.ListObjects("DATA_SOURCES").ListColumns("Order").Range.Select
@@ -761,14 +762,14 @@ Private Sub GetArrDS()
     
     ' amount of data sources in Scope
     n = WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange, _
-            NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value)
+            Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value)
     
     ReDim arrDS(n, 7) ' size must be equal to number of parameters
     For i = 1 To Me.ListObjects("DATA_SOURCES").DataBodyRange.Rows.Count
         ' fill array according to order of execution
     
         If Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
-            NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
+            Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
             
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_ID) = _
                 Me.ListObjects("DATA_SOURCES").ListColumns("Data Source").DataBodyRange.Cells(i, 1)
@@ -785,22 +786,22 @@ Private Sub GetArrDS()
             ' if empty settings - use General options
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_System) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("System").DataBodyRange.Cells(i, 1).Value = vbNullString, _
-                    ThisWorkbook.Names("GENERAL_SYSTEM").RefersToRange.Value, _
+                    Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("System").DataBodyRange.Cells(i, 1).Value)
             
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Language) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Language").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    ThisWorkbook.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
+                    Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("Language").DataBodyRange.Cells(i, 1).Value)
                 
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_User) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    ThisWorkbook.Names("GENERAL_USER").RefersToRange.Value, _
+                    Me.Names("GENERAL_USER").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1).Value)
         
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1), enumDataSource.DS_Client) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    ThisWorkbook.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1).Value)
         
         End If
@@ -819,26 +820,26 @@ ErrHandler:
 End Sub
 
 Private Sub Worksheet_Activate()
-    If IsEmpty(NamedRangesScope) Then
-        DefineNamedRangeScope
+    'If IsEmpty(me) Then
+    '    DefineNamedRangeScope
+    'End If
+    If Me.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
     End If
-    If NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
-    End If
-    If NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If Me.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
 Private Sub Worksheet_SelectionChange(ByVal Target As Range)
-    If IsEmpty(NamedRangesScope) Then
-        DefineNamedRangeScope
+    'If IsEmpty(me) Then
+    '    DefineNamedRangeScope
+    'End If
+    If Me.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
     End If
-    If NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        NamedRangesScope.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
-    End If
-    If NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If Me.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
@@ -911,7 +912,7 @@ AskWhatToCollect:
     
     ' If Application.Workbooks.Count = 1 Then Exit Sub
     ' Call LogOffBOA
-    Call DefineNamedRangeScope
+    'Call DefineNamedRangeScope
     
     Application.StatusBar = "Enabling BOA..."
     Call EnableBOA
@@ -935,11 +936,11 @@ AskWhatToCollect:
                 Application.StatusBar = "Log On..."
                 Call Application.Run("SapLogon", _
                     CStr(arrDS(i, enumDataSource.DS_ID)), _
-                    NamedRangesScope.Names("GENERAL_CLIENT").RefersToRange.Value, _
-                    NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value, _
-                    GetPassword(NamedRangesScope.Names("GENERAL_SYSTEM").RefersToRange.Value, _
-                        NamedRangesScope.Names("GENERAL_USER").RefersToRange.Value), _
-                    NamedRangesScope.Names("GENERAL_LANGUAGE").RefersToRange.Value)
+                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                    Me.Names("GENERAL_USER").RefersToRange.Value, _
+                    GetPassword(Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
+                        Me.Names("GENERAL_USER").RefersToRange.Value), _
+                    Me.Names("GENERAL_LANGUAGE").RefersToRange.Value)
                 
                 Application.StatusBar = "Refreshing..."
                 Run "SAPExecuteCommand", "Refresh" ' , arrDS(i, 1)
@@ -951,9 +952,9 @@ AskWhatToCollect:
                 'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
                 Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
                 
-                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                     r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
-                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                        "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                 End If
                 
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, 1) ' Sheet Name
@@ -984,9 +985,9 @@ AskWhatToCollect:
                             'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                             Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                             
-                            If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                            If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                                 r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                    "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                    "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                             End If
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -1003,9 +1004,9 @@ AskWhatToCollect:
                                 'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                                 Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                                 
-                                If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                                     r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                        "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                        "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                                 End If
                             
                                 r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -1024,9 +1025,9 @@ AskWhatToCollect:
                         ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                         Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                         
-                        If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                        If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                             r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                         End If
                         
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -1056,9 +1057,9 @@ AskWhatToCollect:
                             ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                             Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                             
-                            If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                            If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                                 r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                    "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                    "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                             End If
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -1081,9 +1082,9 @@ AskWhatToCollect:
                                     'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
                                     Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
                                     
-                                    If NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
+                                    If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
                                         r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                            "'" & NamedRangesScope.Names("LIST_SCOPES").RefersToRange.Value
+                                            "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
                                     End If
                                     
                                     r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
@@ -1226,10 +1227,10 @@ End Sub
 Sub FakeCheckIfNoData()
 ' use this sub to test how Delay Functionality works
     If dummy = 0 Then
-        ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
+        Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
         dummy = 1
     Else
-        ThisWorkbook.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
+        Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
     End If
 End Sub
 
@@ -1249,7 +1250,7 @@ Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
     Dim scope As String
         
     Debug.Print Now, "Callback_BeforeFirstPromptsDisplay"
-    scope = NamedRangesScope.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value
+    scope = Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value
     
     ' define arrays with Variables table columns - faster then read each cell
     With Me.ListObjects("VARIABLES")
