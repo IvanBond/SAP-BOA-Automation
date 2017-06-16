@@ -25,9 +25,11 @@ Option Compare Text
 #If VBA7 Then
     Private Declare PtrSafe Function MakeSureDirectoryPathExists Lib _
         "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
+    Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
 #Else
     Private Declare Function MakeSureDirectoryPathExists Lib _
         "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
+    Private Declare Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
 #End If
 
 Const ForAppending = 8 ' for OpenTextFile
@@ -40,14 +42,13 @@ Public objFSO As Object
 Public objLog As Object
 Dim arrDS ' array for data sources
 Dim currentDS As String ' current data source
+Dim currentDS_index As Long
 
 Dim bMultiLogonMode As Boolean
 ' special mode when refresh is done data source be data source
 ' and after each data source macro run SAPLogoff
 ' to be sure that next data source will be refreshed with defined language
 ' and defined user
-
-Dim NamedRangesScope ' can be Workbook or Worksheet
 
 Enum enumDataSource ' used to reference to elements of arrDS array
     DS_ID = 0
@@ -58,6 +59,7 @@ Enum enumDataSource ' used to reference to elements of arrDS array
     DS_MacrosAfter = 5
     DS_Client = 6
     DS_CalculateAfter = 7
+    DS_Row = 8
 End Enum
 
 Dim dummy As Integer
@@ -73,21 +75,6 @@ Private Sub DefineGlobalVariables()
     Call GetArrDS  ' populate array with data sources
         
 End Sub
-
-'Private Sub DefineNamedRangeScope()
-'    Set NamedRangesScope = Me
-'    ' all needed named ranged are in ControlPanel sheet scope
-'
-'    'On Error Resume Next
-'    ' if user copy ControlPanel several times and do not delete #REF named ranges after deletion of ControlPanel
-'    ' Excel makes ControlPanel's named ranges in scope of worksheet
-'    'Debug.Print Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Address
-'    'If Err.Number = 0 Then
-'    '    Set NamedRangesScope = Me
-'    'Else
-'    '    Set NamedRangesScope = ThisWorkbook
-'    'End If
-'End Sub
 
 Function Refresh() As Boolean
     Dim StartPoint As Double
@@ -125,12 +112,13 @@ Function Refresh() As Boolean
     
     Application.StatusBar = "Executing macros before Refresh..."
     arrMacrosBefore = Split(Me.Names("MACROS_BEFORE").RefersToRange.Value, ",")
+    
     For m = 0 To UBound(arrMacrosBefore)
         On Error Resume Next
-        Application.StatusBar = "Executing macro " & Trim(arrMacrosBefore(i)) & "..."
-        Run Trim(arrMacrosBefore(i))
+        Application.StatusBar = "Executing macro " & Trim(arrMacrosBefore(m)) & "..."
+        Run Trim(arrMacrosBefore(m))
         If Err.Number <> 0 Then
-            Debug.Print "Couldn't run macro " & Trim(arrMacrosBefore(i))
+            Debug.Print "Couldn't run macro " & Trim(arrMacrosBefore(m))
             GoTo ErrHandler
         End If
         On Error GoTo 0
@@ -161,6 +149,7 @@ Function Refresh() As Boolean
             bYetAnotherAttempt = False
             bSAPSetVariablesOnly = IsSAPSetVariablesOnly(CStr(arrDS(i, enumDataSource.DS_ID)))
             currentDS = CStr(arrDS(i, enumDataSource.DS_ID))
+            currentDS_index = i
             
 Start_Refresh:
             On Error GoTo ErrHandler
@@ -288,6 +277,7 @@ Start_Refresh:
         Application.StatusBar = "Executing Macros After " & arrDS(i, enumDataSource.DS_ID)
         If arrDS(i, enumDataSource.DS_MacrosAfter) <> vbNullString Then
             arrMacrosAfterDSRefresh = Split(arrDS(i, enumDataSource.DS_MacrosAfter), ",")
+            
             For m = 0 To UBound(arrMacrosAfterDSRefresh)
                 On Error Resume Next
                 Application.StatusBar = "Executing macro " & Trim(arrMacrosAfterDSRefresh(m)) & "..."
@@ -327,15 +317,21 @@ Start_Refresh:
                         Debug.Print "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
                                 CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
                                 
-                        Application.Wait (Now() + TimeValue("00:" & Right("0" & _
+                        'Application.Wait (Now() + TimeValue("00:" & Right("0" & _
                                 CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00"))
+                        WaitSeconds 60 * Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value
+                        
                         bYetAnotherAttempt = True
                         ' refresh same data source again - and make same check again
                         GoTo Start_Refresh
                         
-                    End If
-                End If
+                    End If ' If Attempt > Me.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
+                End If ' If Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
                 
+                If IsRepeatRefreshOn(CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                ' expect that macro changed variable values
+                    GoTo Start_Refresh
+                End If
             Next m ' next macro
         End If
         
@@ -363,7 +359,7 @@ Start_Refresh:
     
     For m = 0 To UBound(arrMacrosAfter)
         On Error Resume Next
-        Run Trim(arrMacrosAfter(i))
+        Run Trim(arrMacrosAfter(m))
         If Err.Number <> 0 Then
             Debug.Print "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
             GoTo ErrHandler
@@ -764,10 +760,13 @@ Private Sub GetArrDS()
     n = WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange, _
             Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value)
     
-    ReDim arrDS(n, 7) ' size must be equal to number of parameters
+    ' n must be equal to MAX value in column Order for corresponding Scope
+    
+    ReDim arrDS(n, 8) ' size must be equal to number of parameters
     For i = 1 To Me.ListObjects("DATA_SOURCES").DataBodyRange.Rows.Count
         ' fill array according to order of execution
-    
+        
+        ' expected correct value in column Order
         If Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
             Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
             
@@ -782,6 +781,9 @@ Private Sub GetArrDS()
             
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_CalculateAfter) = _
                 Me.ListObjects("DATA_SOURCES").ListColumns("Calculate After").DataBodyRange.Cells(i, 1)
+            
+            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Row) = _
+                Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Row
             
             ' if empty settings - use General options
             arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_System) = _
@@ -799,11 +801,12 @@ Private Sub GetArrDS()
                     Me.Names("GENERAL_USER").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1).Value)
         
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1), enumDataSource.DS_Client) = _
+            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Client) = _
                 IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1) = vbNullString, _
                     Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
                         Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1).Value)
         
+            
         End If
     Next i
 
@@ -811,8 +814,7 @@ Exit_sub:
     Exit Sub
     
 ErrHandler:
-    Debug.Print Err.Number & ": " & Err.Description
-    ' Stop
+    Debug.Print "GetArrDS", Err.Number & ": " & Err.Description
     Err.Clear
     On Error GoTo 0
     GoTo Exit_sub
@@ -1224,13 +1226,25 @@ Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
     Loop
 End Sub
 
-Sub FakeCheckIfNoData()
+Sub FakeCheckIfNoData(Optional t As String)
 ' use this sub to test how Delay Functionality works
     If dummy = 0 Then
         Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
         dummy = 1
     Else
         Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
+    End If
+End Sub
+
+Sub FakeTurnRepeatRefreshOn(Optional t As String)
+    ' use this sub to test how Repeat Refresh works
+    If dummy = 0 Then
+        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
+                Me.ListObjects("DATA_SOURCES").ListColumns("Repeat Refresh").Range.Column).Value = "Y"
+        dummy = 1
+    Else
+        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
+                Me.ListObjects("DATA_SOURCES").ListColumns("Repeat Refresh").Range.Column).Value = vbNullString
     End If
 End Sub
 
@@ -1302,6 +1316,7 @@ Exit_sub:
     Exit Sub
 
 ErrHandler:
+    Debug.Print "Callback_BeforeFirstPromptsDisplay", Err.Number & ": " & Err.Description
     Err.Clear
     On Error GoTo 0
     GoTo Exit_sub
@@ -1323,10 +1338,33 @@ Private Function IsSAPSetVariablesOnly(ds As String) As Boolean
     IsSAPSetVariablesOnly = True ' by default
     With Me.ListObjects("VARIABLES")
         If Not .DataBodyRange Is Nothing Then
-            IsSAPSetVariablesOnly = (WorksheetFunction.CountIfs(.ListColumns("Data Source").DataBodyRange, ds, _
+            IsSAPSetVariablesOnly = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, _
+                    .ListColumns("Data Source").DataBodyRange, ds, _
                     .ListColumns("Command").DataBodyRange, "SAPSetFilter") = 0)
         End If
     End With
 End Function
 
+Private Function IsRepeatRefreshOn(ds As String) As Boolean
+    With Me.ListObjects("DATA_SOURCES")
+        If Not .DataBodyRange Is Nothing Then
+            IsRepeatRefreshOn = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, _
+                    .ListColumns("Data Source").DataBodyRange, ds, _
+                    .ListColumns("Repeat Refresh"), "Y") = 1)
+        End If
+    End With
+End Function
 
+' http://www.fmsinc.com/microsoftaccess/modules/examples/avoiddoevents.asp
+Private Sub WaitSeconds(intSeconds As Integer)
+  Dim datTime As Date
+
+  datTime = DateAdd("s", intSeconds, Now)
+
+  Do
+   ' Yield to other programs (better than using DoEvents which eats up all the CPU cycles)
+    Sleep 100
+    DoEvents
+  Loop Until Now >= datTime
+
+End Sub
