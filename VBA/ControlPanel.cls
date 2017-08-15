@@ -10,70 +10,122 @@ Attribute VB_Exposed = True
 Option Explicit
 Option Compare Text
 
-' Author: Ivan Bondarenko
-' Initial release: 2017-01
-' https://bondarenkoivan.wordpress.com
-' https://linkedin.com/in/bondarenkoivan/en
-' Big Thanks to Andres Merino for ideas and testing!
+Rem Introduction
+    ' Author: Ivan Bondarenko
+    ' Initial release: 2017-01
+    ' https://bondarenkoivan.wordpress.com
+    ' https://linkedin.com/in/bondarenkoivan/en
 
-' update 2017-05-24
-' now macro handles cases with SAPSetVariables only
-' no need to refresh twice in such cases
+    ' Big Thanks to Andres Merino for ideas and testing!
 
-' declaration of function that is used in Function CreatePath
-' possibly will be used for logging
-#If VBA7 Then
-    Private Declare PtrSafe Function MakeSureDirectoryPathExists Lib _
-        "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
-    Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
-#Else
-    Private Declare Function MakeSureDirectoryPathExists Lib _
-        "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
-    Private Declare Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
-#End If
+    ' update 2017-05-24
+    ' now macro handles cases with SAPSetVariables only
+    ' no need to refresh twice in such cases
+     
+    ' update 2017-08-01
+    ' release of version with additional actions
+    ' added actions: 'Email', 'Save As', 'Refresh All', 'Email on Success', 'Run Macro'
+    ' planned: Publish to PowerBI, Update PP+ThinkCell, Update PowerPoint Tables
+    
+    ' update 2017-08-13
+    ' fixed serious issue with subsequent refresh
+    ' callback now used only for first refresh of DS
+    ' every next refresh macro uses SAPSetVariable is DS is active
+    ' if not active - firstly refesh it, then set filters
+    ' reason: Disable / Enable BOA is not stable action, it crashes Excel too often.
+    ' What else? Many small fixes, renamed all objects
+    ' now prefix for tables and named ranges is common: CP_ (from Control Panel)
+    '
+    
+    ' declaration of function that is used in Function CreatePath
+    ' possibly will be used for logging
+    
+Rem Declaration
+    #If VBA7 Then
+        Private Declare PtrSafe Function MakeSureDirectoryPathExists Lib _
+            "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
+        Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
+    #Else
+        Private Declare Function MakeSureDirectoryPathExists Lib _
+            "IMAGEHLP.DLL" (ByVal DirPath As String) As Long
+        Private Declare Sub Sleep Lib "kernel32" (ByVal lngMilliSeconds As Long)
+    #End If
 
-Const ForAppending = 8 ' for OpenTextFile
-Const ForReading = 1
+    Const ForAppending = 8 ' for OpenTextFile
+    Const ForReading = 1
+    
+    Const sTableScopesName = "CP_SCOPES"
+    Const sTableDataSourcesName = "CP_DATA_SOURCES"
+    Const sTableVariablesName = "CP_VARIABLES"
+    Const STableActions = "CP_ACTIONS"
+    
+    Public Logs_Enabled As Boolean
+    Public LogFile As String
 
-Public Logs_Enabled As Boolean
-Public LogFile As String
+    Public objFSO As Object
+    Public objLog As Object
+    Dim arrDS ' array for data sources
+    Dim currentDS As String ' current data source ID
+    Dim currentDS_index As Long ' index in array arrDS
+    Dim bManualRefresh As Boolean
+    Dim bBOAEnabled As Boolean ' var to store initial state of BOA
+    ' Enable / Disable Boa causes Excel to crash when Excel starts with BOA activated
+    ' however, works fine when BOA is not enabled by default
+    ' In addition, subsequent refresh doesn't trigger CallBack
+    Dim bBeforeFirstPromptsDisplayRegistered As Boolean
+    Dim bBeforeFirstPromptsDisplaySubExecuted As Boolean
+    Dim dicRefreshedDataSources ' dictionary with refreshed datasources
+    ' for refreshed data sources callback BeforeFirstPromptsDisplay won't work
+    
+    Dim currentActionRowId As Long
+    Dim bCallActionFromDStable As Boolean
 
-Public objFSO As Object
-Public objLog As Object
-Dim arrDS ' array for data sources
-Dim currentDS As String ' current data source
-Dim currentDS_index As Long
+    Dim bMultiLogonMode As Boolean
+    ' special mode when refresh is done data source be data source
+    ' and after each data source macro run SAPLogoff
+    ' to be sure that next data source will be refreshed with defined language
+    ' and defined user
 
-Dim bMultiLogonMode As Boolean
-' special mode when refresh is done data source be data source
-' and after each data source macro run SAPLogoff
-' to be sure that next data source will be refreshed with defined language
-' and defined user
+    Enum enumDataSource ' used to reference to elements of arrDS array
+        DS_ID = 0
+        DS_Refresh = 1
+        DS_Language = 2
+        DS_System = 3
+        DS_User = 4
+        DS_MacrosAfter = 5
+        DS_Client = 6
+        DS_CalculateAfter = 7
+        DS_Row = 8
+        DS_Sheet = 9
+        ' Repeat Refresh can be changed by macro / formula, so do not keep it in this array
+        DS_Crosstab = 10
+        ' Clear Crosstab - is used by action "Clear Crosstabs", or after all actions
+        DS_FillHeaders = 11
+        DS_CallActions = 12
+    End Enum
 
-Enum enumDataSource ' used to reference to elements of arrDS array
-    DS_ID = 0
-    DS_Refresh = 1
-    DS_Language = 2
-    DS_System = 3
-    DS_User = 4
-    DS_MacrosAfter = 5
-    DS_Client = 6
-    DS_CalculateAfter = 7
-    DS_Row = 8
-End Enum
+    Enum enumMailImportance
+        Low = 0
+        Normal = 1
+        High = 2
+    End Enum
 
-Dim dummy As Integer
-'
+    Dim dummy As Integer
+Rem End of declaration
+
+Function Manual_Refresh() As Boolean
+    bManualRefresh = True
+    Manual_Refresh = Refresh
+End Function
 
 Private Sub DefineGlobalVariables()
     Set objFSO = CreateObject("Scripting.FileSystemObject")
-    If Left(ThisWorkbook.Path, 4) <> "http" Then ' disable log for workbooks on SharePoint
-        Logs_Enabled = True ' TODO - add cell with parameter
+    If Left(ThisWorkbook.Path, 4) <> "http" Then
+'        Logs_Enabled = True ' TODO - add cell with parameter
         LogFile = ThisWorkbook.Path & "\" & ThisWorkbook.Name & ".log"
+    Else
+        LogFile = Environ("temp") & "\" & ThisWorkbook.Name & ".log"
     End If
-    
-    Call GetArrDS  ' populate array with data sources
-        
 End Sub
 
 Function Refresh() As Boolean
@@ -84,327 +136,538 @@ Function Refresh() As Boolean
     Dim arrMacrosBefore
     Dim arrMacrosAfter
     Dim arrMacrosAfterDSRefresh
+    Dim arrActions
     Dim Attempt As Long
     Dim bYetAnotherAttempt As Boolean
-    Dim bSAPSetVariablesOnly As Boolean ' when scope filters contains no SAPSetFilter command
+    Dim bSAPSetVariablesOnly As Boolean ' when scope's filters don't contain SAPSetFilter command
+    Dim lScopeRow As Long
+    Dim iRet As Integer
+    Dim InitialCalculationState As Long
     
     On Error GoTo ErrHandler
     
+    If Me.ListObjects("CP_SCOPES").DataBodyRange Is Nothing Then
+        If bManualRefresh Then
+            MsgBox "No scopes defined!", vbCritical
+        End If
+        Exit Function
+    End If
+    
     StartPoint = Now()
+    InitialCalculationState = Application.Calculation
+    Application.Calculation = xlCalculationManual
     ThisWorkbook.Windows(1).Activate ' otherwise Logon fails, if another wb is active
+    
+    Me.Names("CP_LAST_REPORT_DATE").RefersToRange.Value = _
+        Me.Names("CP_REPORT_DATE").RefersToRange.Value
+    
+    If IsEmpty(dicRefreshedDataSources) Then
+        Set dicRefreshedDataSources = CreateObject("Scripting.Dictionary")
+        dicRefreshedDataSources.comparemode = 1 ' TextCompare
+    End If
+    
+    Application.StatusBar = "Enabling BOA..."
+    Call EnableBOA ' does nothing if addin is already enabled
     
     Application.StatusBar = "Defining global variables..."
     Call DefineGlobalVariables
-'    Call DefineNamedRangeScope
-    
-    Application.StatusBar = "Enabling BOA..."
-    Call EnableBOA
-    
-    ' when only one language is used -
-    ' it is enough to logon only once with defined language
-    
-    If Not IsArray(arrDS) Then
-        MsgBox "Please, add at least one data source in table DATA_SOURCES!", vbExclamation
-        'Exit Sub
-        ' remain it false
-        GoTo Exit_Function
-    End If
-    
+        
     Application.StatusBar = "Executing macros before Refresh..."
-    arrMacrosBefore = Split(Me.Names("MACROS_BEFORE").RefersToRange.Value, ",")
+    arrMacrosBefore = Split(Me.Names("CP_MACROS_BEFORE").RefersToRange.Value, ",")
     
     For m = 0 To UBound(arrMacrosBefore)
         On Error Resume Next
         Application.StatusBar = "Executing macro " & Trim(arrMacrosBefore(m)) & "..."
-        Run Trim(arrMacrosBefore(m))
+        Application.Run Trim(arrMacrosBefore(m))
         If Err.Number <> 0 Then
-            Debug.Print "Couldn't run macro " & Trim(arrMacrosBefore(m))
+            Debug.Print Now, "Couldn't run macro " & Trim(arrMacrosBefore(m))
             GoTo ErrHandler
         End If
         On Error GoTo 0
         
         ' ? do we need to calc after each macro? - macro owner decides
-        ' if needed - user will have to add it in his/her macro
-        'Application.StatusBar = "Calculating..."
-        'Application.Calculate
     Next m
-    
-    Application.StatusBar = "Log On..."
-    If Not LogOn_DataSources Then
-        Debug.Print "Couldn't LogOn"
-        GoTo ErrHandler
-    End If
-    
-    ' initial calculate
-    Application.StatusBar = "Calculating..."
-    Application.Calculate
     Application.StatusBar = vbNullString
     
-    ' refresh all enabled data sources in specified order
-    For i = 1 To UBound(arrDS, 1)
-        ' array elements are ordered
-        ' macro refreshes only those that enabled
-        If arrDS(i, 1) = "Y" Then
-            Attempt = 0 ' attempt to refresh in case of delay (if no new data)
-            bYetAnotherAttempt = False
-            bSAPSetVariablesOnly = IsSAPSetVariablesOnly(CStr(arrDS(i, enumDataSource.DS_ID)))
-            currentDS = CStr(arrDS(i, enumDataSource.DS_ID))
-            currentDS_index = i
-            
-Start_Refresh:
-            On Error GoTo ErrHandler
-                                    
-            ' if another attempt - we have to logon again
-            If bYetAnotherAttempt Then
-                Application.StatusBar = "Log On..."
-                If Not LogOn_DataSources Then
-                    Debug.Print "Couldn't LogOn"
-                    GoTo ErrHandler
-                End If
+    On Error GoTo ErrHandler
+    ' initial calculate
+    With Application
+        .StatusBar = "Initial calculation..."
+        .Calculate
+        .StatusBar = vbNullString
+    End With
+    
+    For lScopeRow = 1 To Me.ListObjects("CP_SCOPES").DataBodyRange.Rows.Count
+        
+        ' if 'Refresh All Scopes' mode is enabled - change main Scope cell
+        If Me.Names("CP_REFRESH_ALL_SCOPES").RefersToRange.Value = "Y" Then
+            If Me.ListObjects("CP_SCOPES").ListColumns("Enabled?").DataBodyRange.Cells(lScopeRow, 1).Value <> "Y" Then
+                GoTo Next_Scope
+            Else
+                Me.Names("CP_SCOPE").RefersToRange.Value = _
+                    Me.ListObjects("CP_SCOPES").ListColumns("Scope").DataBodyRange.Cells(lScopeRow, 1).Value
+                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": calculating..."
+                Application.Calculate ' just in case
+                Application.StatusBar = vbNullString
             End If
-            
-            ' if within one Scope we should refresh several data sources with different languages
-            ' e.g. everything is available in local language except one data source, which should be refreshed in EN
-            If bMultiLogonMode Then
-                If i = 1 Then ' if first data source
-                ' logon with specified Language
-                    Application.StatusBar = "Logging On " & arrDS(i, enumDataSource.DS_ID)
-                    If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), "100", arrDS(i, enumDataSource.DS_User), _
-                            GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
-                            arrDS(i, enumDataSource.DS_Language)) = 0 Then
-                        
-                        Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+        Else
+        ' leave Scope cell as is
+        End If
+        
+        ' refresh screen
+        If bManualRefresh Then
+            Application.ScreenUpdating = True
+            WaitSeconds 1
+            Application.ScreenUpdating = False
+        End If
+        
+        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Collecting data sources..."
+        Call GetArrDS  ' populate array with data sources
+        Application.StatusBar = vbNullString
+        
+        If Not IsArray(arrDS) Then
+            If bManualRefresh Then
+                MsgBox "No Data Sources specified for scope '" & Me.Names("CP_SCOPE").RefersToRange.Value & "'." & vbCrLf _
+                    & "Disable Scope or add Data Sources.", vbExclamation
+                GoTo Exit_Function
+            Else
+                Debug.Print Now, "No Data Sources specified for scope " & Me.Names("CP_SCOPE").RefersToRange.Value
+            End If
+        End If
+        
+        ' when common connection parameters are used - enough to logon once
+        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On..."
+        If Not LogOn_DataSources Then
+            Debug.Print Now, "Couldn't LogOn"
+            GoTo ErrHandler
+        End If
+        Application.StatusBar = vbNullString
+        
+        ' refresh all enabled data sources in the specified scope using specified order
+        For i = 1 To UBound(arrDS, 1)
+            ' array elements are ordered
+            ' macro refreshes only those that enabled
+            If arrDS(i, enumDataSource.DS_Refresh) = "Y" Then
+                Attempt = 0 ' attempt to refresh in case of delay (if no new data)
+                bYetAnotherAttempt = False
+                bSAPSetVariablesOnly = IsSAPSetVariablesOnly(CStr(arrDS(i, enumDataSource.DS_ID)))
+                currentDS = CStr(arrDS(i, enumDataSource.DS_ID))
+                currentDS_index = i ' index in array, not a row of sheet!
+
+                ' Jump to new refresh attempt if RepeatRefresh is enabled
+Start_Refresh:
+                On Error GoTo ErrHandler
+                
+                ' if another attempt - we have to logon again
+                ' as for safety macro does Logoff (avoid kick from server)
+                If bYetAnotherAttempt Then
+                    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On..."
+                    If Not LogOn_DataSources Then
+                        Debug.Print Now, "Couldn't LogOn"
                         GoTo ErrHandler
-                        ' couldn't logon
                     End If
-                Else
-                    ' if previous language differs from current
-                    ' in the end of prev cycle macro logged off
-                    If arrDS(i, enumDataSource.DS_Language) <> arrDS(i - 1, enumDataSource.DS_Language) Then
-                        Application.StatusBar = "Logging On " & arrDS(i, enumDataSource.DS_ID)
-                        If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), "100", arrDS(i, enumDataSource.DS_User), _
+                    Application.StatusBar = vbNullString
+                End If
+                
+                ' if within one Scope we should refresh several data sources with different languages
+                ' e.g. everything is available in local language except one data source, which should be refreshed in EN
+                If bMultiLogonMode Then
+                    If i = 1 Then ' if first data source
+                    ' logon with specified Language / User / Client
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On " & arrDS(i, enumDataSource.DS_ID)
+                        If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), arrDS(i, enumDataSource.DS_Client), arrDS(i, enumDataSource.DS_User), _
                                 GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
                                 arrDS(i, enumDataSource.DS_Language)) = 0 Then
                             
-                            Debug.Print "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                            Debug.Print Now, "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
                             GoTo ErrHandler
+                        End If
+                    Else
+                        ' if one of previous connection parameters differ from current
+                        ' in the end of prev cycle macro logged off - check end of loop area for MultiLogon case
+                        If arrDS(i, enumDataSource.DS_Language) <> arrDS(i - 1, enumDataSource.DS_Language) Or _
+                            arrDS(i, enumDataSource.DS_System) <> arrDS(i - 1, enumDataSource.DS_System) Or _
+                            arrDS(i, enumDataSource.DS_Client) <> arrDS(i - 1, enumDataSource.DS_Client) Or _
+                            arrDS(i, enumDataSource.DS_User) <> arrDS(i - 1, enumDataSource.DS_User) Then
+                            
+                            Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On " & arrDS(i, enumDataSource.DS_ID)
+                            If Run("SAPLogon", arrDS(i, enumDataSource.DS_ID), arrDS(i, enumDataSource.DS_Client), arrDS(i, enumDataSource.DS_User), _
+                                    GetPassword(CStr(arrDS(i, enumDataSource.DS_System)), CStr(arrDS(i, enumDataSource.DS_User))), _
+                                    arrDS(i, enumDataSource.DS_Language)) = 0 Then
+                                
+                                Debug.Print Now, "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                                GoTo ErrHandler
+                            End If
+                        End If
+                        
+                    End If ' if first data source in array
+                Else
+                    ' not bMultiLogonMode
+                    ' logon was done during LogOn_DataSources
+                End If ' MultiLogon check
+                
+                ' Logon is done at this step
+                ' after Logon - Initial Refresh (for SAPSetFilter)
+                If Not bSAPSetVariablesOnly Then
+                    ' SAPSetVariableOnly is Scope-depending
+                    If Not Application.Run("SAPGetProperty", "IsDataSourceActive", CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                        ' if SAPSetFilter is used then we need "Initial Refresh" before ApplyScopeFilters
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                        If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
+                            Debug.Print Now, "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                            GoTo ErrHandler
+                        End If
+                        Application.StatusBar = vbNullString
+                        bBeforeFirstPromptsDisplaySubExecuted = False ' if callback was called - do not track it here
+                        
+                        ' add to dictionary
+                        If Not dicRefreshedDataSources.exists(CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                            dicRefreshedDataSources.Add CStr(arrDS(i, enumDataSource.DS_ID)), CStr(arrDS(i, enumDataSource.DS_ID))
+                        End If
+                    End If
+                End If ' not bSAPSetVariablesOnly
+                
+                ' just in case, if user set pause
+                ' without it VBA cannot use com-addin's API
+                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
+                Call Run("SAPSetRefreshBehaviour", "On") ' triggers RefreshData
+                Application.StatusBar = vbNullString
+                        
+                ' set filters / variables
+                ' AnotherAttempt - is a second or third attempt after successful first refresh (where filters were set)
+                ' first attempt is Scope-depending. It is not the same as first refresh of data source within session
+                If Not bYetAnotherAttempt Then
+                    ' note:
+                    ' if first attempt (not the same as first refresh of data source) - we have to apply filters / variables
+                    ' note: if second / third ... attempt - no need to set variables again
+                    
+                    ' if active - just apply scope filters
+                    If Application.Run("SAPGetProperty", "IsDataSourceActive", CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & " - Applying filters to " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                        ' during ApplyScopeFilters macro will
+                        ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
+                        If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                            Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                            If bManualRefresh Then
+                                Stop
+                            End If
+                        End If
+                        
+                        ' unpause
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                        Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
+                        Call Run("SAPSetRefreshBehaviour", "On") ' triggers RefreshData
+                        Application.StatusBar = vbNullString
+                    Else
+                        ' DS is not active - probably after logoff / logon or the very first refresh
+                        ' the very first refresh of data source (callback) OR consequent refresh
+                        If dicRefreshedDataSources.exists(CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                            ' callback will not work for consequent refresh
+                            ' as DS is not Active - we have to refresh it
+                            ' in old version: we used Disable BOA + Enable BOA to reset callback,
+                            ' but it crashes Excel in most of the cases
+                            ' new method can lead to double refresh, but no other stable choice
+                            Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                            If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
+                                Debug.Print Now, "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
+                                GoTo ErrHandler
+                            End If
+                            ' no need to add to the dictionary
+                            bBeforeFirstPromptsDisplaySubExecuted = False
+                            
+                            ' after refresh we can set filters
+                            Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Applying filters to " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                            ' during ApplyScopeFilters macro will
+                            ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
+                            If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                                Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                                If bManualRefresh Then
+                                    Stop
+                                End If
+                            End If
+                            
+                            ' unpause
+                            Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                            Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
+                            Call Run("SAPSetRefreshBehaviour", "On") ' triggers RefreshData
+                            Application.StatusBar = vbNullString
+                        Else
+                            ' doesn't exists in dictionary
+                            
+                            If bSAPSetVariablesOnly Then
+                                ' the very first refresh - use callback, it should work
+                                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Registering callback BeforeFirstPromptsDisplay..."
+                                Call Callback_BeforeFirstPromptsDisplay_Reg
+                                
+                                ' just refresh and callback will set filters
+                                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                                iRet = Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
+                                Debug.Print Now, "Refresh", CStr(arrDS(i, enumDataSource.DS_ID)), iRet
+                                
+                                ' check whether callback was called
+                                If bBeforeFirstPromptsDisplayRegistered And (Not bBeforeFirstPromptsDisplaySubExecuted) Then
+                                    ' variables were not applied
+                                    Debug.Print Now, "Callback didn't work"
+                                    ' still have to apply filters - only using double refresh
+                                    ' this never happend to me, but in case of issue of BOA...
+                                    If bManualRefresh Then
+                                        Stop
+                                    End If
+                                End If
+
+                                ' unregistering is not necessary, but just in case. It takes no time
+                                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Unregistering callback BeforeFirstPromptsDisplay..."
+                                Call Callback_BeforeFirstPromptsDisplay_UnReg
+                                Application.StatusBar = vbNullString
+                            Else
+                                ' have SAPSetFilter
+                                ' if it is first attempt - call ApplyScopeFilters
+                                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Applying filters to " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                            
+                                ' during ApplyScopeFilters macro will
+                                ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
+                                If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                                    Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                                    GoTo ErrHandler
+                                End If
+                                Application.StatusBar = vbNullString
+                                
+                                ' unpause
+                                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                                Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
+                                Call Run("SAPSetRefreshBehaviour", "On") ' triggers RefreshData
+                                Application.StatusBar = vbNullString
+                            End If ' If bSAPSetVariablesOnly Then
+                        End If ' if dicRefreshedDataSources.Exists( cstr(arrDS(i, enumDataSource.DS_ID)) )  then
+                    End If ' if Application.Run("SAPGetProperty", "IsDataSourceActive", CStr(arrDS(i, enumDataSource.DS_ID))) then
+                Else
+                    ' 2nd, 3rd... attempt
+                    ' just refresh, all filters were set for first refresh
+                    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Refreshing " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
+                    Call Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
+                    Application.StatusBar = vbNullString
+                End If ' If Not bYetAnotherAttempt Then
+                
+                bBeforeFirstPromptsDisplaySubExecuted = False
+                
+                ' since program is here - DS was refreshed
+                If Not dicRefreshedDataSources.exists(CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                    ' register fact of refresh - add to dictionary
+                    dicRefreshedDataSources.Add CStr(arrDS(i, enumDataSource.DS_ID)), CStr(arrDS(i, enumDataSource.DS_ID))
+                End If
+                
+                If bMultiLogonMode Then
+                    ' if next DS has different connection parameters - logoff
+                    If i < UBound(arrDS) Then
+                        If arrDS(i, enumDataSource.DS_Language) <> arrDS(i + 1, enumDataSource.DS_Language) Or _
+                            arrDS(i, enumDataSource.DS_System) <> arrDS(i + 1, enumDataSource.DS_System) Or _
+                            arrDS(i, enumDataSource.DS_Client) <> arrDS(i + 1, enumDataSource.DS_Client) Or _
+                            arrDS(i, enumDataSource.DS_User) <> arrDS(i + 1, enumDataSource.DS_User) Then
+                            
+                            Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging Off..."
+                            Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
+                            Call LogOffBOA
+                            Application.EnableEvents = True
+                            Application.StatusBar = vbNullString
                         End If
                     End If
                 End If
                 
-                ' after Logon - Initial Refresh (for SAPSetFilter)
-                If Not bSAPSetVariablesOnly Then
-                    ' if SAPSetFilter is used then we need "Initial Refresh" before ApplyScopeFilters
-                    Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
-                    If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
-                        Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                        GoTo ErrHandler
-                    End If
-                End If ' not bSAPSetVariablesOnly
-            Else
-                ' not bMultiLogonMode
-                ' logon was done during LogOn_DataSources
+                ' **************************** Extra actions for data source ****************************
                 
-                If Not bSAPSetVariablesOnly Then
-                    ' if SAPSetFilter is used then we need "Initial Refresh" before ApplyScopeFilters
-                    Application.StatusBar = "Refreshing " & arrDS(i, enumDataSource.DS_ID)
-                    If Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID)) = 0 Then
-                        ' debug
-                        Debug.Print "Couldn't Refresh " & CStr(arrDS(i, enumDataSource.DS_ID))
-                        GoTo ErrHandler
-                        ' write log - couldn't refresh Data source XXX
-                    Else
-                        Application.StatusBar = vbNullString
-                    End If
-                End If ' not bSAPSetVariablesOnly
+                ' Fill Headers
+                If arrDS(i, enumDataSource.DS_FillHeaders) = "Y" Then
+                    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Filling headers for " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    Call FillHeaders(CStr(arrDS(i, enumDataSource.DS_Crosstab)))
+                    Application.StatusBar = vbNullString
+                End If
                 
-            End If
-            
-            ' set filters / variables
-            If Not bYetAnotherAttempt Then
-                ' if first run - we have to apply filters / variables
-                If bSAPSetVariablesOnly Then
-                    ' if bSAPSetVariablesOnly - then Variables will be set by corresponding callback
-                    Application.StatusBar = "Registering callback BeforeFirstPromptsDisplay..."
-                    Call Callback_BeforeFirstPromptsDisplay_Reg
-                    
-                    ' The Default refresh - only SAPSetVariables, first refresh
-                    Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID) & "..."
-                    Call Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
-                    
-                    Application.StatusBar = "Unregistering callback BeforeFirstPromptsDisplay..."
-                    Call Callback_BeforeFirstPromptsDisplay_UnReg
-                Else
-                    ' if it is first Refresh - call ApplyScopeFilters
-                    Application.StatusBar = "Applying filters to data source " & arrDS(i, enumDataSource.DS_ID)
-                    
-                    ' during ApplyScopeFilters macro will
-                    ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
-                    If Not ApplyScopeFilters(Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
-                        Debug.Print "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
-                        GoTo ErrHandler
-                    End If
-                End If ' bSAPSetVariablesOnly
-            End If
-            
-            ' for all next attempts no need to set Variables or Filters - just refresh
-            ' refresh report
-            If bSAPSetVariablesOnly Then
-                If bYetAnotherAttempt Then
-                    Application.StatusBar = "Refreshing data source " & arrDS(i, enumDataSource.DS_ID) & "..."
-                    Call Run("SAPExecuteCommand", "Refresh", arrDS(i, enumDataSource.DS_ID))
+                ' calculate if user specified this parameter
+                If arrDS(i, enumDataSource.DS_CalculateAfter) = "Y" Then
+                    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Calculating after " & CStr(arrDS(i, enumDataSource.DS_ID))
+                    'Application.CalculationInterruptKey = xlNoKey
+                    Application.Calculate ' trigger calculation of formulas. Possibly, next report has filter based on the refreshed report
+                    'Application.CalculationInterruptKey = xlAnyKey
+                    Application.StatusBar = vbNullString
                 End If
-            Else
-            ' if SAPSetFilter, then ApplyScopeFilters was executed, therefore we have to turn On default addin behavior
-                Application.StatusBar = "Turning On RefreshBehavior for data source " & arrDS(i, enumDataSource.DS_ID)
-                Call Run("SAPExecuteCommand", "PauseVariableSubmit", "Off") ' unpause submit of variables
-                Call Run("SAPSetRefreshBehaviour", "On") ' trigger RefreshData
-            End If
-            
-            If bMultiLogonMode Then
-                ' if next DS has different language - logoff
-                If i < UBound(arrDS) Then
-                    If arrDS(i, enumDataSource.DS_Language) <> arrDS(i + 1, enumDataSource.DS_Language) Then
-                        Application.StatusBar = "Logging Off..."
-                        Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
-                        Call LogOffBOA
-                        Application.EnableEvents = True
-                    End If
-                End If
-            End If
-        End If
-        
-        Application.StatusBar = "Executing Macros After " & arrDS(i, enumDataSource.DS_ID)
-        If arrDS(i, enumDataSource.DS_MacrosAfter) <> vbNullString Then
-            arrMacrosAfterDSRefresh = Split(arrDS(i, enumDataSource.DS_MacrosAfter), ",")
-            
-            For m = 0 To UBound(arrMacrosAfterDSRefresh)
-                On Error Resume Next
-                Application.StatusBar = "Executing macro " & Trim(arrMacrosAfterDSRefresh(m)) & "..."
-                Application.Run "ControlPanel." & Trim(arrMacrosAfterDSRefresh(m))
-                If Err.Number <> 0 Then
-                    Debug.Print "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
-                    GoTo ErrHandler
-                End If
-                On Error GoTo 0
-                'Application.StatusBar = "Calculating..."
-                'Application.Calculate
-                'Application.StatusBar = vbNullString
                 
+                Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Executing Macros After " & CStr(arrDS(i, enumDataSource.DS_ID))
+                If arrDS(i, enumDataSource.DS_MacrosAfter) <> vbNullString Then
+                    arrMacrosAfterDSRefresh = Split(arrDS(i, enumDataSource.DS_MacrosAfter), ",")
+                    
+                    For m = 0 To UBound(arrMacrosAfterDSRefresh)
+                        On Error Resume Next
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Executing macro " & Trim(arrMacrosAfterDSRefresh(m)) & "..."
+                        Application.Run Trim(arrMacrosAfterDSRefresh(m))
+                        If Err.Number <> 0 Then
+                            Debug.Print Now, "Couldn't run macro " & Trim(arrMacrosAfterDSRefresh(m))
+                            GoTo ErrHandler
+                        End If
+                        On Error GoTo 0
+                    Next m ' next macro
+                End If ' If arrDS(i, enumDataSource.DS_MacrosAfter) <> vbNullString Then
+                Application.StatusBar = vbNullString
+                
+                ' Handle Delay scenario
+                Me.Names("CP_DELAY").RefersToRange.Calculate
                 ' user could call a sub, which change CONTROL_PANEL_DELAY cell value
                 ' check it - Check if no new data
-                If Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
+                If Me.Names("CP_DELAY").RefersToRange.Value = "Y" Then
                     ' check if have attempts
                     ' starts from 0 for each data source
                     Attempt = Attempt + 1
-                    If Attempt > Me.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
-                        Debug.Print "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has no new data."
+                    If Attempt > Me.Names("CP_ATTEMPTS").RefersToRange.Value Then
+                        Debug.Print Now, "Attempts limit exceed. " & arrDS(i, enumDataSource.DS_ID) & " has no new data."
                         GoTo ErrHandler
                     Else
                         ' if trigger - wait
                         ' log off to prevent kick from server
-                        Application.StatusBar = "Logging Off..."
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging Off..."
                         Application.EnableEvents = False ' for some reason LogOff triggers SelectionChange event
                         Call LogOffBOA
                         Application.EnableEvents = True
                         
-                        'Application.StatusBar = "Delay starting from " & Format(Now(), "yyyy-MM-dd hh:mm") & " for " _
-                            & CStr(me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value) & " min"
+                        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
+                                CStr(Me.Names("CP_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
                         
-                        Application.StatusBar = "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
-                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                        Debug.Print Now, "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
+                                CStr(Me.Names("CP_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
+                                                                
+                        WaitSeconds 60 * Me.Names("CP_DELAY_FOR").RefersToRange.Value
                         
-                        Debug.Print "Delay till " & Format((Now() + TimeValue("00:" & Right("0" & _
-                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00")), "yyyy-MM-dd hh:mm:ss")
-                                
-                        'Application.Wait (Now() + TimeValue("00:" & Right("0" & _
-                                CStr(Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value), 2) & ":00"))
-                        WaitSeconds 60 * Me.Names("CONTROL_PANEL_DELAY_FOR").RefersToRange.Value
+                        Application.StatusBar = vbNullString
                         
                         bYetAnotherAttempt = True
                         ' refresh same data source again - and make same check again
                         GoTo Start_Refresh
-                        
-                    End If ' If Attempt > Me.Names("CONTROL_PANEL_ATTEMPTS").RefersToRange.Value Then
-                End If ' If Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y" Then
+                    End If ' If Attempt > Me.Names("CP_ATTEMPTS").RefersToRange.Value Then
+                End If ' If Me.Names("CP_DELAY").RefersToRange.Value = "Y" Then
                 
-                If IsRepeatRefreshOn(CStr(arrDS(i, enumDataSource.DS_ID))) Then
-                ' expect that macro changed variable values
-                    GoTo Start_Refresh
+                ' Call Action
+                ' call specified actions
+                If CStr(arrDS(i, enumDataSource.DS_CallActions)) <> vbNullString Then
+                    bCallActionFromDStable = True
+                    arrActions = Split(CStr(arrDS(i, enumDataSource.DS_CallActions)), ",")
+                    For m = LBound(arrActions) To UBound(arrActions)
+                        Call Actions_Handler(Trim(arrActions(m)))
+                    Next m
+                    bCallActionFromDStable = False
                 End If
-            Next m ' next macro
+                
+                ' if Repeat refresh
+                With Me.ListObjects(sTableDataSourcesName)
+                    ' calculate to get state of Repeat Refresh
+                    Me.Cells(arrDS(i, enumDataSource.DS_Row), .ListColumns("Repeat Refresh").Range.Column).Calculate
+                    If Me.Cells(arrDS(i, enumDataSource.DS_Row), .ListColumns("Repeat Refresh").Range.Column).Value = "Y" Then
+                        GoTo Start_Refresh
+                    End If
+                End With
+                    
+            End If ' If arrDS(i, enumDataSource.DS_Refresh) = "Y" Then
+            
+Next_Data_Source:
+        Next i ' next Data source
+    
+        ' if 'Refresh All Scopes' mode is disabled - then quit from loop
+        If Me.Names("CP_REFRESH_ALL_SCOPES").RefersToRange.Value <> "Y" Then
+            Exit For
         End If
         
-        ' calculate if user specified this parameter
-        If arrDS(i, enumDataSource.DS_CalculateAfter) = "Y" Then
-            Application.StatusBar = "Calculating..."
-            'Application.CalculationInterruptKey = xlNoKey
-            Application.Calculate ' trigger calculation of formulas. Possibly, next report has filter based on the refreshed report
-            'Application.CalculationInterruptKey = xlAnyKey
-            Application.StatusBar = vbNullString
-        End If
-    Next i ' next Data source
+Next_Scope:
+    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Completed"
+    Next lScopeRow
     
-    Application.StatusBar = "Logging Off..."
-    
-    Application.EnableEvents = False
-    Call LogOffBOA
-    Application.EnableEvents = True
-    
-    arrMacrosAfter = Split(Me.Names("MACROS_AFTER").RefersToRange.Value, ",")
-    
-    Me.Names("LAST_REFRESH_DATETIME").RefersToRange.Value = Now()
-    
-    Application.StatusBar = "Executing macros after Refresh..."
-    
+    arrMacrosAfter = Split(Me.Names("CP_MACROS_AFTER").RefersToRange.Value, ",")
     For m = 0 To UBound(arrMacrosAfter)
+        Application.StatusBar = "Executing macros after Refresh..."
         On Error Resume Next
         Run Trim(arrMacrosAfter(m))
         If Err.Number <> 0 Then
-            Debug.Print "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
+            Debug.Print Now, "Couldn't run macro " & arrMacrosAfterDSRefresh(m)
             GoTo ErrHandler
         End If
         On Error GoTo 0
     Next m
     
     ' resulting calculation
-    Application.StatusBar = "Calculating..."
+    Application.StatusBar = "Final calculation..."
     Application.Calculate
     Application.StatusBar = vbNullString
+    
+    Me.Names("CP_LAST_REFRESH_DATETIME").RefersToRange.Value = Now()
+    
+    Debug.Print Now, "Refresh time: " & Format(Now() - StartPoint, "hh:mm:ss")
+    'Debug.Print Now, "Refresh time: " & Format(Now() - StartPoint, "[m]")
+    'Debug.Print Now, "Refresh time: " & Format(Now() - StartPoint, "[m]:ss")
     
     ' Call Write_Log("END # Overall execution time # " & _
         Round((Now() - StartPoint) * 3600 * 24 / 60, 0) & "m " & _
         FormatNumber(Round((Now() - StartPoint) * 3600 * 24, 0) Mod 60, 0) & "s")
-        
+    
+    Call Actions_Handler
+    
     Refresh = True
             
 Exit_Function:
     On Error Resume Next
-    Application.StatusBar = "Disabling BOA..."
     
-    Call LogOffBOA ' just in case
+    If Not bManualRefresh Then
+        Application.StatusBar = "Logging off..."
+        Call LogOffBOA ' just in case
+        
+        Application.StatusBar = "Disabling BOA..."
+        ' Disabling is needed for automation
+        ' otherwise Excel application cannot be closed
+        ' BO Analysis addin requires something...
+        Call DisableBOA
+        Application.StatusBar = vbNullString
+    Else
+        'Application.StatusBar = "Logging off..."
+        'Call Run("SAPLogOff", True) ' re-connect
+        'Application.StatusBar = vbNullString
+    End If
     
-    'Call DisableBOA ' crashes Excel from time to time
-
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True ' just in case
-    Application.StatusBar = vbNullString
+    With Application
+        .Cursor = xlDefault
+        .EnableEvents = True
+        .ScreenUpdating = True ' just in case
+        .StatusBar = "Final calculation..." ' just in case
+        .Calculation = InitialCalculationState
+        .StatusBar = vbNullString
+    End With
     
     Exit Function
     
 ErrHandler:
     ' send email?
     If Err.Number <> 0 Then
-        Debug.Print Err.Number & ": " & Err.Description
+        Debug.Print Now, "Refresh", Err.Number & ": " & Err.Description
         Err.Clear
+        Application.Cursor = xlDefault
+        Application.ScreenUpdating = True
+        If bManualRefresh Then Stop
     End If
     GoTo Exit_Function
     Resume
 End Function
 
+Private Function IsBOAEnabled() As Boolean
+    Dim addIn As COMAddIn
+    On Error Resume Next
+    For Each addIn In Application.COMAddIns
+        If addIn.progID = "SapExcelAddIn" Then
+            If addIn.Connect = True Then
+                IsBOAEnabled = True
+                Exit Function
+            End If
+        End If
+    Next
+End Function
+
 Private Sub EnableBOA()
     Dim addIn As COMAddIn
-
+    On Error Resume Next
     For Each addIn In Application.COMAddIns
         If addIn.progID = "SapExcelAddIn" Then
             If addIn.Connect = False Then
@@ -413,19 +676,17 @@ Private Sub EnableBOA()
             End If
         End If
     Next
-    
 End Sub
 
 Private Sub DisableBOA()
     Dim addIn As COMAddIn
-
+    On Error Resume Next
     For Each addIn In Application.COMAddIns
         If addIn.progID = "SapExcelAddIn" Then
             addIn.Connect = False
             Exit Sub
         End If
     Next
-    
 End Sub
 
 Private Function LogOn_DataSources() As Boolean
@@ -441,27 +702,35 @@ Private Function LogOn_DataSources() As Boolean
     Dim dicSystems As Object
     Dim Key
     
+    On Error GoTo ErrHandler
+    
     Set dicSystems = CreateObject("Scripting.Dictionary")
     dicSystems.comparemode = 1 ' TextCompare
     
-    With Me.ListObjects("DATA_SOURCES")
+    With Me.ListObjects(sTableDataSourcesName)
         If .DataBodyRange Is Nothing Then
             Exit Function
         Else
             ' check if several languages in Scope
             For r = 1 To .DataBodyRange.Rows.Count
                 If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
-                                Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
+                                Me.Names("CP_SCOPE").RefersToRange.Value Then
+                    ' Connection parameters - System, Client, Language
+                    ' in 99.9% cases workbook use sames values for all three
+                    ' however, sometimes we can meet workbooks with data from different systems
+                    ' or queries that uses different languages
+                    ' if so - I call it Multi-Logon mode
+                    ' as it requires to logoff from prev session and logon with new parameters
                     
                     If sLanguage = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                     ' on first step - remember value in variable
                         sLanguage = IIf(.ListColumns("Language").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                            Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
+                                            Me.Names("CP_GENERAL_LANGUAGE").RefersToRange.Value, _
                                             .ListColumns("Language").DataBodyRange.Cells(r, 1).Value)
                     Else
-                    ' second and further steps - compare each row with value in variable
+                        ' second and further steps - compare each row with value in variable
                         If sLanguage <> IIf(.ListColumns("Language").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                            Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
+                                            Me.Names("CP_GENERAL_LANGUAGE").RefersToRange.Value, _
                                             .ListColumns("Language").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -471,14 +740,14 @@ Private Function LogOn_DataSources() As Boolean
                     End If ' empty language
                     
                     If sUser = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
-                    ' on first step - remember value in variable
+                        ' on first step - remember value in variable
                         sUser = IIf(.ListColumns("User").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    Me.Names("GENERAL_USER").RefersToRange.Value, _
+                                    Me.Names("CP_GENERAL_USER").RefersToRange.Value, _
                                     .ListColumns("User").DataBodyRange.Cells(r, 1).Value)
                     Else
-                    ' second and further steps - compare each row with value in variable
+                        ' second and further steps - compare each row with value in variable
                         If sUser <> IIf(.ListColumns("User").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    Me.Names("GENERAL_USER").RefersToRange.Value, _
+                                    Me.Names("CP_GENERAL_USER").RefersToRange.Value, _
                                     .ListColumns("User").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -489,14 +758,14 @@ Private Function LogOn_DataSources() As Boolean
                     
                     ' check if different clients used in Scope
                     If sClient = vbNullString And .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
-                    ' on first step - remember value in variable
+                        ' on first step - remember value in variable
                         sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    Me.Names("CP_GENERAL_CLIENT").RefersToRange.Value, _
                                     .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
                     Else
-                    ' second and further steps - compare each row with value in variable
+                        ' second and further steps - compare each row with value in variable
                         If sClient <> IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
+                                    Me.Names("CP_GENERAL_CLIENT").RefersToRange.Value, _
                                     .ListColumns("Client").DataBodyRange.Cells(r, 1).Value) And _
                                 .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" Then
                             bMultiLogonMode = True
@@ -507,11 +776,8 @@ Private Function LogOn_DataSources() As Boolean
                     
                     ' Dictionary of Systems
                     sSystem = IIf(.ListColumns("System").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
+                                    Me.Names("CP_GENERAL_SYSTEM").RefersToRange.Value, _
                                         .ListColumns("System").DataBodyRange.Cells(r, 1).Value)
-                    'sClient = IIf(.ListColumns("Client").DataBodyRange.Cells(r, 1).Value = vbNullString, _
-                                    me.Names("GENERAL_CLIENT").RefersToRange.Value, _
-                                        .ListColumns("Client").DataBodyRange.Cells(r, 1).Value)
                     If Not dicSystems.exists(sSystem & "+" & sClient) Then
                         dicSystems.Add sSystem & "+" & sClient, .ListColumns("Data Source").DataBodyRange.Cells(r, 1).Value
                     End If
@@ -527,6 +793,7 @@ Private Function LogOn_DataSources() As Boolean
             ' we checked that Scope contains same User and same Language
             ' it means that we can logon to all systems at once
             For Each Key In dicSystems.keys
+                'Debug.Print Now, CStr(dicSystems.Item(Key)), Application.Run("SAPGetProperty", "IsDataSourceActive", CStr(dicSystems.Item(Key)))
                 
                 ' 'arrDS(1, enumDataSource.DS_ID),
                 If Run("SapLogon", _
@@ -537,7 +804,7 @@ Private Function LogOn_DataSources() As Boolean
                         sUser), _
                     sLanguage) = 0 Then
                     
-                    Debug.Print "Couldn't log on to the system " & .ListColumns("System").DataBodyRange.Cells(i, 1).Value
+                    Debug.Print Now, "Couldn't log on to the system '" & CStr(dicSystems.Item(Key)) & "'"
                     Exit Function ' leave Log_On_Systems as False
                 Else
                     LogOn_DataSources = True
@@ -547,7 +814,17 @@ Private Function LogOn_DataSources() As Boolean
             
         End If ' if table 'data source' is not empty
     End With
+
+Exit_Sub:
+    Exit Function
+ErrHandler:
+    Debug.Print Now, "LogOn Data Sources", Err.Number, Err.Description
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    If bManualRefresh Then Stop
     
+    GoTo Exit_Sub
+    Resume
 End Function
 
 Private Function GetPassword(system As String, username As String) As String
@@ -564,7 +841,7 @@ Private Function GetPassword(system As String, username As String) As String
     On Error GoTo ErrHandler
     If objFSO Is Nothing Then Set objFSO = CreateObject("Scripting.FileSystemObject")
     
-    Set objFile = objFSO.OpenTextFile(Me.Names("PASSWORDS_PATH").RefersToRange.Value, ForReading)
+    Set objFile = objFSO.OpenTextFile(Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value, ForReading)
     
     Do Until objFile.AtEndOfStream
         strLine = objFile.ReadLine
@@ -583,9 +860,13 @@ Exit_Function:
     Exit Function
 
 ErrHandler:
-    Debug.Print Err.Number & ": " & Err.Description
+    Debug.Print Now, "GetPassword", Err.Number & ": " & Err.Description
     Err.Clear
-    On Error GoTo 0
+    
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    If bManualRefresh Then Stop
+    
     GoTo Exit_Function
     Resume
 End Function
@@ -594,7 +875,7 @@ Private Function Get_Array_From_Range(rng_ref)
     Dim rng_tmp As Range
     Dim arr_tmp
     If Left(rng_ref, 2) <> "'[" Then ' if not external link
-        ThisWorkbook.Windows(1).Activate ' Range fails if another workbook is activated, that doesn't contain rng_reference
+        ThisWorkbook.Windows(1).Activate ' Range fails if another workbook is activated
     End If
     Set rng_tmp = Application.Range(rng_ref)
     If rng_tmp.Cells.Count = 1 Then
@@ -635,8 +916,9 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
     Dim arrVariableValue
     Dim sVariableValue As String
     
+    On Error GoTo ErrHandler
     ' define arrays with Variables table columns - faster then read each cell
-    With Me.ListObjects("VARIABLES")
+    With Me.ListObjects(sTableVariablesName)
         ' if sure that more than 1 variable
         ' explanation: http://www.cpearson.com/excel/ArraysAndRanges.aspx
         ' arr_var_ds = .ListColumns("Data Source ID").DataBodyRange.Value
@@ -664,6 +946,20 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                 If arr_var_ref_type(variable_row, 1) = "Range" Then
                     
                     ' easier then INPUT_STRING_AS_ARRAY?
+                    ' in this way we can control length of resulting variable, as there is limitaion equal to ~max possible chars in standard Excel cell
+                    ' ~32000 (including spaces and delimiters)
+                    On Error Resume Next
+                    Debug.Print Application.Range(CStr(arr_var_value(variable_row, 1))).Rows.Count
+                    If Err.Number <> 0 Then
+                        Debug.Print Now, "Range '" & CStr(arr_var_value(variable_row, 1)) & "' wasn't found"
+                        If bManualRefresh Then
+                            Stop
+                        Else
+                            GoTo ErrHandler
+                        End If
+                    End If
+                    On Error GoTo ErrHandler
+                    
                     arrVariableValue = Get_Array_From_Range(Application.Range(CStr(arr_var_value(variable_row, 1))).Address(external:=True))
                     For i = 1 To UBound(arrVariableValue)
                         sVariableValue = sVariableValue & "; " & arrVariableValue(i, 1)
@@ -676,15 +972,15 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
                 
-                Me.ListObjects("VARIABLES").ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
-                Me.ListObjects("VARIABLES").ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
                 
                 If Run(arr_var_command(variable_row, 1), _
                         arr_var_ds(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
                         sVariableValue) = 0 Then
                     
-                    Debug.Print "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    Debug.Print Now, "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
                     Exit Function
                 End If ' successful command
                 sVariableValue = vbNullString
@@ -700,6 +996,18 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
             If arr_var_command(variable_row, 1) = "SAPSetVariable" Then
                 If arr_var_ref_type(variable_row, 1) = "Range" Then
                     
+                    On Error Resume Next
+                    Debug.Print Application.Range(CStr(arr_var_value(variable_row, 1))).Rows.Count
+                    If Err.Number <> 0 Then
+                        Debug.Print Now, "Range '" & CStr(arr_var_value(variable_row, 1)) & "' wasn't found"
+                        If bManualRefresh Then
+                            Stop
+                        Else
+                            GoTo ErrHandler
+                        End If
+                    End If
+                    On Error GoTo ErrHandler
+                    
                     ' easier then INPUT_STRING_AS_ARRAY?
                     arrVariableValue = Get_Array_From_Range(Application.Range(CStr(arr_var_value(variable_row, 1))).Address(external:=True))
                     For i = 1 To UBound(arrVariableValue)
@@ -713,8 +1021,8 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
                 
-                Me.ListObjects("VARIABLES").ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
-                Me.ListObjects("VARIABLES").ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
                 
                 If Run(arr_var_command(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
@@ -722,8 +1030,8 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                         "INPUT_STRING", _
                         arr_var_ds(variable_row, 1)) = 0 Then
                     
-                    Debug.Print "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
-                    GoTo Exit_sub
+                    Debug.Print Now, "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    GoTo Exit_Sub
                 End If
                 sVariableValue = vbNullString
             End If ' var command
@@ -731,117 +1039,131 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
     Next variable_row
     
     ApplyScopeFilters = True
-Exit_sub:
+Exit_Sub:
     Exit Function
 
 ErrHandler:
+    Debug.Print Now, "Apply Filters", Err.Number, Err.Description
     Err.Clear
-    On Error GoTo 0
-    GoTo Exit_sub
+    
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    If bManualRefresh Then Stop
+    
+    GoTo Exit_Sub
+    Resume ' for debug
 End Function
 
 Private Sub GetArrDS()
     ' sub collects all active data sources
     Dim n As Long
     Dim i As Long
+    Dim k As Long
     
     On Error GoTo ErrHandler
     
-    If Me.ListObjects("DATA_SOURCES").DataBodyRange Is Nothing Then Exit Sub
-    If Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
+    If Me.ListObjects(sTableDataSourcesName).DataBodyRange Is Nothing Then Exit Sub
+    If Me.Names("CP_SCOPE").RefersToRange.Value = vbNullString Then Exit Sub
     
-    If WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange, "=") > 0 Then
-        Me.ListObjects("DATA_SOURCES").ListColumns("Order").Range.Select
-        Debug.Print "Please, provide order of execution."
-        Exit Sub
-    End If
+    ' just sort by Order, if no Order - default order of execution
+    Call SortDataSources
     
     ' amount of data sources in Scope
-    n = WorksheetFunction.CountIf(Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange, _
-            Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value)
+    n = WorksheetFunction.CountIf(Me.ListObjects(sTableDataSourcesName).ListColumns("Scope").DataBodyRange, _
+            Me.Names("CP_SCOPE").RefersToRange.Value)
     
     ' n must be equal to MAX value in column Order for corresponding Scope
-    
-    ReDim arrDS(n, 8) ' size must be equal to number of parameters
-    For i = 1 To Me.ListObjects("DATA_SOURCES").DataBodyRange.Rows.Count
-        ' fill array according to order of execution
-        
-        ' expected correct value in column Order
-        If Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
-            Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value Then
+    k = 1
+    ReDim arrDS(n, 12) ' size must be equal to number of parameters, check enumDataSource
+    With Me.ListObjects(sTableDataSourcesName)
+        For i = 1 To .DataBodyRange.Rows.Count
+            ' fill array according to order of execution
             
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_ID) = _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Data Source").DataBodyRange.Cells(i, 1)
-            
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Refresh) = _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Refresh?").DataBodyRange.Cells(i, 1)
-            
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_MacrosAfter) = _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Macros After").DataBodyRange.Cells(i, 1)
-            
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_CalculateAfter) = _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Calculate After").DataBodyRange.Cells(i, 1)
-            
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Row) = _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Scope").DataBodyRange.Cells(i, 1).Row
-            
-            ' if empty settings - use General options
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_System) = _
-                IIf(Me.ListObjects("DATA_SOURCES").ListColumns("System").DataBodyRange.Cells(i, 1).Value = vbNullString, _
-                    Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
-                        Me.ListObjects("DATA_SOURCES").ListColumns("System").DataBodyRange.Cells(i, 1).Value)
-            
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Language) = _
-                IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Language").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    Me.Names("GENERAL_LANGUAGE").RefersToRange.Value, _
-                        Me.ListObjects("DATA_SOURCES").ListColumns("Language").DataBodyRange.Cells(i, 1).Value)
+            ' expected correct value in column Order
+            If .ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
+                Me.Names("CP_SCOPE").RefersToRange.Value Then
                 
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_User) = _
-                IIf(Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    Me.Names("GENERAL_USER").RefersToRange.Value, _
-                        Me.ListObjects("DATA_SOURCES").ListColumns("User").DataBodyRange.Cells(i, 1).Value)
-        
-            arrDS(Me.ListObjects("DATA_SOURCES").ListColumns("Order").DataBodyRange.Cells(i, 1), enumDataSource.DS_Client) = _
-                IIf(Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1) = vbNullString, _
-                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
-                        Me.ListObjects("DATA_SOURCES").ListColumns("Client").DataBodyRange.Cells(i, 1).Value)
-        
+                arrDS(k, enumDataSource.DS_ID) = _
+                    .ListColumns("Data Source").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_Refresh) = _
+                    .ListColumns("Refresh?").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_MacrosAfter) = _
+                    .ListColumns("Macros After").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_CalculateAfter) = _
+                    .ListColumns("Calculate After").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_Row) = _
+                    .ListColumns("Scope").DataBodyRange.Cells(i, 1).Row
+                
+                arrDS(k, enumDataSource.DS_Sheet) = _
+                    .ListColumns("Sheet").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_Crosstab) = _
+                    .ListColumns("Crosstab").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_CallActions) = _
+                    .ListColumns("Call Actions").DataBodyRange.Cells(i, 1).Value
+                
+                arrDS(k, enumDataSource.DS_FillHeaders) = _
+                    .ListColumns("Fill Headers").DataBodyRange.Cells(i, 1).Value
+                
+                ' if empty settings - use General options
+                arrDS(k, enumDataSource.DS_System) = _
+                    IIf(.ListColumns("System").DataBodyRange.Cells(i, 1).Value = vbNullString, _
+                        Me.Names("CP_GENERAL_SYSTEM").RefersToRange.Value, _
+                            .ListColumns("System").DataBodyRange.Cells(i, 1).Value)
+                
+                arrDS(k, enumDataSource.DS_Language) = _
+                    IIf(.ListColumns("Language").DataBodyRange.Cells(i, 1) = vbNullString, _
+                        Me.Names("CP_GENERAL_LANGUAGE").RefersToRange.Value, _
+                            .ListColumns("Language").DataBodyRange.Cells(i, 1).Value)
+                    
+                arrDS(k, enumDataSource.DS_User) = _
+                    IIf(.ListColumns("User").DataBodyRange.Cells(i, 1) = vbNullString, _
+                        Me.Names("CP_GENERAL_USER").RefersToRange.Value, _
+                            .ListColumns("User").DataBodyRange.Cells(i, 1).Value)
             
-        End If
-    Next i
-
-Exit_sub:
+                arrDS(k, enumDataSource.DS_Client) = _
+                    IIf(.ListColumns("Client").DataBodyRange.Cells(i, 1) = vbNullString, _
+                        Me.Names("CP_GENERAL_CLIENT").RefersToRange.Value, _
+                            .ListColumns("Client").DataBodyRange.Cells(i, 1).Value)
+            
+                k = k + 1
+            End If
+        Next i
+    End With ' DATA SOURCES table
+    
+Exit_Sub:
     Exit Sub
     
 ErrHandler:
-    Debug.Print "GetArrDS", Err.Number & ": " & Err.Description
+    Debug.Print Now, "GetArrDS", Err.Number & ": " & Err.Description
     Err.Clear
-    On Error GoTo 0
-    GoTo Exit_sub
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
     Resume 'debug
 End Sub
 
 Private Sub Worksheet_Activate()
-    'If IsEmpty(me) Then
-    '    DefineNamedRangeScope
-    'End If
-    If Me.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        Me.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
     End If
-    If Me.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        Me.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
 Private Sub Worksheet_SelectionChange(ByVal Target As Range)
-    'If IsEmpty(me) Then
-    '    DefineNamedRangeScope
-    'End If
-    If Me.Names("PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        Me.Names("PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
     End If
-    If Me.Names("GENERAL_USER").RefersToRange.Value = vbNullString Then
-        Me.Names("GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
     End If
 End Sub
 
@@ -851,8 +1173,8 @@ Sub LogOffBOA()
 End Sub
 
 Private Function CreatePath(NewPath As String) As Boolean
-' Function possibly will be used for logging
-' create path to Logs
+    ' Function possibly will be used for logging
+    ' create path to Logs
     Dim sPath As String
     'Add a trailing slash if none
     sPath = NewPath & IIf(Right$(NewPath, 1) = "\", "", "\")
@@ -877,7 +1199,7 @@ End Function
 
 ' + inspiration from https://blogs.sap.com/2017/02/03/analysis-for-office-variables-and-filters-via-vba/
 
-Sub Collect_Variables()
+Private Sub Collect_Variables()
 ' sub will add data sources and variables into existing tables
     
     Dim arrVar
@@ -891,6 +1213,7 @@ Sub Collect_Variables()
     Dim sSystem   As String
     Dim order As Long
     Dim WhatToCollectResponse As String
+    Dim bFirstCollection As Boolean
     
 AskWhatToCollect:
     WhatToCollectResponse = InputBox("Please, specify what you want to collect:" & vbCrLf _
@@ -908,8 +1231,8 @@ AskWhatToCollect:
     Application.ScreenUpdating = False
     
     'On Error Resume Next
-    'ThisWorkbook.Sheets("Result").ListObjects("VARIABLES").DataBodyRange.Rows.Delete
-    'ThisWorkbook.Sheets("Result").ListObjects("DATA_SOURCES").DataBodyRange.Rows.Delete
+    'ThisWorkbook.Sheets("Result").ListObjects(sTableVariablesName).DataBodyRange.Rows.Delete
+    'ThisWorkbook.Sheets("Result").ListObjects(sTableDataSourcesName).DataBodyRange.Rows.Delete
     'On Error GoTo ErrHandler
     
     ' If Application.Workbooks.Count = 1 Then Exit Sub
@@ -921,8 +1244,12 @@ AskWhatToCollect:
     Application.StatusBar = vbNullString
     ThisWorkbook.Activate
     
-    Call ListObjectDeleteEmptyRows(Me.ListObjects("DATA_SOURCES"))
-    Call ListObjectDeleteEmptyRows(Me.ListObjects("VARIABLES"))
+    Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableDataSourcesName))
+    Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableVariablesName))
+    
+    If Me.ListObjects(sTableDataSourcesName).DataBodyRange Is Nothing Then
+        bFirstCollection = True
+    End If
     
     Call GetListOfDS ' get list of Data Sources
     
@@ -935,40 +1262,42 @@ AskWhatToCollect:
             
             If Not Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 
-                Application.StatusBar = "Log On..."
+                Application.StatusBar = "Logging On..."
                 Call Application.Run("SapLogon", _
                     CStr(arrDS(i, enumDataSource.DS_ID)), _
-                    Me.Names("GENERAL_CLIENT").RefersToRange.Value, _
-                    Me.Names("GENERAL_USER").RefersToRange.Value, _
-                    GetPassword(Me.Names("GENERAL_SYSTEM").RefersToRange.Value, _
-                        Me.Names("GENERAL_USER").RefersToRange.Value), _
-                    Me.Names("GENERAL_LANGUAGE").RefersToRange.Value)
+                    Me.Names("CP_GENERAL_CLIENT").RefersToRange.Value, _
+                    Me.Names("CP_GENERAL_USER").RefersToRange.Value, _
+                    GetPassword(Me.Names("CP_GENERAL_SYSTEM").RefersToRange.Value, _
+                        Me.Names("CP_GENERAL_USER").RefersToRange.Value), _
+                    Me.Names("CP_GENERAL_LANGUAGE").RefersToRange.Value)
                 
                 Application.StatusBar = "Refreshing..."
-                Run "SAPExecuteCommand", "Refresh" ' , arrDS(i, 1)
+                Run "SAPExecuteCommand", "Refresh"
                 
             End If
             
             If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 Application.StatusBar = "Collecting variables and filters..."
-                'Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=True)
-                Set r_ds = Me.ListObjects("DATA_SOURCES").ListRows.Add(AlwaysInsert:=False)
+                'Set r_ds = Me.ListObjects(sTableDataSourcesName).ListRows.Add(AlwaysInsert:=True)
+                Set r_ds = Me.ListObjects(sTableDataSourcesName).ListRows.Add(AlwaysInsert:=False)
                 
-                If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                    r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
-                        "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                If bFirstCollection Then
+                    r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = "Main"
                 End If
                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, 1) ' Sheet Name
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet) ' Sheet Name
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Crosstab").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Crosstab)
+                
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source Name").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "DataSourceName")
+                
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Query").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "QueryTechName")
                 
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("System").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "System")
-                
+                                                
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Refresh?").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = "Y"
                 r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Order").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = order
                 order = order + 1
@@ -984,16 +1313,16 @@ AskWhatToCollect:
                             Err.Clear
                             On Error GoTo 0
                             ' 1-dimensional - only 1 variable
-                            'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                            'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                            Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                             
-                            If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                    "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                            If bFirstCollection Then
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
                             End If
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                             r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
                                     Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(1), "TECHNICALNAME")
@@ -1003,16 +1332,16 @@ AskWhatToCollect:
                         Else
                             ' two-dimentional
                             For Var = LBound(arrVar) To UBound(arrVar)
-                                'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                                Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                                'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                                Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                                 
-                                If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                        "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                                If bFirstCollection Then
+                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
                                 End If
                             
                                 r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                                 r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                                r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
                                 
                                 r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
                                         Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(Var, 1), "TECHNICALNAME")
@@ -1024,16 +1353,17 @@ AskWhatToCollect:
                         
                     Else ' If IsArray(arrVar) Then
                         ' if no variables in Data Source
-                        ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                        Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                        ' Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                        Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                         
-                        If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                        If bFirstCollection Then
+                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
                         End If
                         
                         r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                         r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
+                        r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                        
                         r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
                         r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Not applicable"
                         r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
@@ -1056,16 +1386,16 @@ AskWhatToCollect:
                             Err.Clear
                             On Error GoTo 0
                             ' 1-dimensional - only 1 variable
-                            ' Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                            Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                            ' Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                            Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                             
-                            If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                    "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                            If bFirstCollection Then
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
                             End If
                             
                             r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                             r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
                             
                             For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
                                  If arrDimensions(Dimen, 2) = arrFilters(1) Then
@@ -1081,16 +1411,16 @@ AskWhatToCollect:
                             ' 2-deminsional
                             For Fil = LBound(arrFilters) To UBound(arrFilters)
                                 If arrFilters(Fil, 1) <> "Measures" Then
-                                    'Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=True)
-                                    Set r = Me.ListObjects("VARIABLES").ListRows.Add(AlwaysInsert:=False)
+                                    'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                                    Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                                     
-                                    If Me.Names("LIST_SCOPES").RefersToRange.Cells.Count = 1 Then
-                                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
-                                            "'" & Me.Names("LIST_SCOPES").RefersToRange.Value
+                                    If bFirstCollection Then
+                                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
                                     End If
                                     
                                     r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
                                     r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
+                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
                                     
                                     For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
                                          If arrDimensions(Dimen, 2) = arrFilters(Fil, 1) Then
@@ -1111,8 +1441,7 @@ AskWhatToCollect:
                 End If
             Else ' If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 ' write that DS is not active
-                
-                ' MsgBox "Please, refresh data source " & arrDS(i, 1)
+                                
             End If ' isDataSourceActive
 Next_DS:
         Next i ' next DS in arrDS
@@ -1122,37 +1451,31 @@ Next_DS:
     End If ' If IsArray(arrDS) Then
 
     Me.Range("DATA_SOURCES[#All]").RemoveDuplicates Header:=xlYes, _
-    Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
         
     Me.Range("VARIABLES[#All]").RemoveDuplicates Header:=xlYes, _
-     Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9)
+     Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
     
-    Call ListObjectDeleteEmptyRows(Me.ListObjects("DATA_SOURCES"))
-    Call ListObjectDeleteEmptyRows(Me.ListObjects("VARIABLES"))
-    
-    Application.StatusBar = "Logging Off..."
-    
-    Application.EnableEvents = False
-    Call LogOffBOA
-    Application.EnableEvents = True
-    
-Exit_sub:
+    Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableDataSourcesName))
+    Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableVariablesName))
+        
+Exit_Sub:
     On Error Resume Next
     Erase arrDS
     Application.Cursor = xlDefault
-    'Application.StatusBar = "Disabling BOA..."
-    'Call DisableBOA
     
     Application.StatusBar = vbNullString
     Application.ScreenUpdating = True
     Exit Sub
     
 ErrHandler:
-    On Error GoTo 0
+    Debug.Print Now, "Collect_Variables", Err.Number & ": " & Err.Description
+    Err.Clear
     Application.ScreenUpdating = True
-    Debug.Print Err.Number & ": " & Err.Description
     Application.Cursor = xlDefault
-    GoTo Exit_sub
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
     Resume ' for debug
 End Sub
 
@@ -1162,7 +1485,7 @@ End Sub
 ' ***********************************************************************************
 
 Private Sub GetListOfDS()
-' Sub for "collect variables" part
+    ' Sub for "collect variables" part
     Dim tmpCrossTabs
     Dim i As Long
     
@@ -1172,7 +1495,7 @@ Private Sub GetListOfDS()
     On Error Resume Next
     If Not IsArray(tmpCrossTabs) Then
         MsgBox "Cannot find any BOA Data Source in this workbook." & vbCrLf _
-            & "Such issue were noticed when BO Analysis addin cannot initialize itself." & vbCrLf _
+            & "Such issue was noticed when BO Analysis addin cannot initialize itself." & vbCrLf _
             & "If you are sure that have Data Sources in this workbook - " & vbCrLf _
             & "save this file, close Excel completely, check that no Excel process in Task Manager," & vbCrLf _
             & "open your file and try again."
@@ -1184,12 +1507,13 @@ Private Sub GetListOfDS()
         Err.Clear
         On Error GoTo 0
         ' only 1 dimension
-        ReDim arrDS(0, 1)
+        ReDim arrDS(0, 12)
         arrDS(0, enumDataSource.DS_ID) = tmpCrossTabs(3) ' data source ID
 
         On Error Resume Next
-        arrDS(0, 1) = ActiveWorkbook.Names("SAP" & tmpCrossTabs(1)).RefersToRange.Parent.Name ' worksheet name
-        ' not 100% precise method, can fail if user rename NamedRange
+        arrDS(0, enumDataSource.DS_Sheet) = ActiveWorkbook.Names("SAP" & tmpCrossTabs(1)).RefersToRange.Parent.Name ' worksheet name
+        ' not 100% precise method, can fail if user renamed NamedRange for crosstab
+        arrDS(0, enumDataSource.DS_Crosstab) = "SAP" & tmpCrossTabs(1)
         Err.Clear
         On Error GoTo 0
         
@@ -1197,14 +1521,15 @@ Private Sub GetListOfDS()
         Err.Clear
         On Error GoTo 0
         ' arrDS = tmpCrossTabs
-        ReDim arrDS(UBound(tmpCrossTabs, 1), 1)
+        ReDim arrDS(UBound(tmpCrossTabs, 1), 12)
         
         For i = 1 To UBound(tmpCrossTabs, 1)
             arrDS(i, enumDataSource.DS_ID) = tmpCrossTabs(i, 3) ' data source ID
             
             On Error Resume Next
-            arrDS(i, 1) = ThisWorkbook.Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
-            ' not 100% precise method, can fail if user rename NamedRange
+            arrDS(i, enumDataSource.DS_Sheet) = ThisWorkbook.Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
+            ' not 100% precise method, can fail if user renamed NamedRange for crosstab
+            arrDS(0, enumDataSource.DS_Crosstab) = "SAP" & tmpCrossTabs(i, 1)
             Err.Clear
             On Error GoTo 0
         Next i
@@ -1226,31 +1551,9 @@ Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
     Loop
 End Sub
 
-Sub FakeCheckIfNoData(Optional t As String)
-' use this sub to test how Delay Functionality works
-    If dummy = 0 Then
-        Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "Y"
-        dummy = 1
-    Else
-        Me.Names("CONTROL_PANEL_DELAY").RefersToRange.Value = "N"
-    End If
-End Sub
-
-Sub FakeTurnRepeatRefreshOn(Optional t As String)
-    ' use this sub to test how Repeat Refresh works
-    If dummy = 0 Then
-        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Repeat Refresh").Range.Column).Value = "Y"
-        dummy = 1
-    Else
-        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
-                Me.ListObjects("DATA_SOURCES").ListColumns("Repeat Refresh").Range.Column).Value = vbNullString
-    End If
-End Sub
-
-Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
-' callback is triggered on Data Source Refresh
-' at than point we know Scope and 'currentDS' stores DS ID
+Private Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
+    ' callback is triggered on Data Source Refresh
+    ' at than point we know Scope and 'currentDS' stores DS ID
     Dim arr_var_scope
     Dim arr_var_ds
     Dim arr_var_command
@@ -1264,10 +1567,10 @@ Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
     Dim scope As String
         
     Debug.Print Now, "Callback_BeforeFirstPromptsDisplay"
-    scope = Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value
+    scope = Me.Names("CP_SCOPE").RefersToRange.Value
     
     ' define arrays with Variables table columns - faster then read each cell
-    With Me.ListObjects("VARIABLES")
+    With Me.ListObjects(sTableVariablesName)
         arr_var_scope = Get_Array_From_Range(.ListColumns("Scope").DataBodyRange.Address(external:=True))
         arr_var_ds = Get_Array_From_Range(.ListColumns("Data Source").DataBodyRange.Address(external:=True))
         arr_var_command = Get_Array_From_Range(.ListColumns("Command").DataBodyRange.Address(external:=True))
@@ -1295,8 +1598,8 @@ Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
                 
-                Me.ListObjects("VARIABLES").ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
-                Me.ListObjects("VARIABLES").ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
                 
                 If Run(arr_var_command(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
@@ -1304,28 +1607,32 @@ Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
                         "INPUT_STRING", _
                         arr_var_ds(variable_row, 1)) = 0 Then
                     
-                    Debug.Print "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
-                    GoTo Exit_sub
+                    Debug.Print Now, "Couldn't apply filter for variable " & Str(arr_var_field(variable_row, 1)) & " : " & sVariableValue
+                    GoTo Exit_Sub
                 End If
                 sVariableValue = vbNullString
             End If ' var command
         End If ' var scope and data source
     Next variable_row
-        
-Exit_sub:
+    
+    bBeforeFirstPromptsDisplaySubExecuted = True
+Exit_Sub:
     Exit Sub
 
 ErrHandler:
-    Debug.Print "Callback_BeforeFirstPromptsDisplay", Err.Number & ": " & Err.Description
+    Debug.Print Now, "Callback_BeforeFirstPromptsDisplay", Err.Number & ": " & Err.Description
     Err.Clear
-    On Error GoTo 0
-    GoTo Exit_sub
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
 End Sub
 
 Private Sub Callback_BeforeFirstPromptsDisplay_Reg()
     Dim iRet As Integer
-    Call Application.Run("SAPExecuteCommand", "RegisterCallback", "BeforeFirstPromptsDisplay", "ControlPanel.Callback_BeforeFirstPromptsDisplay")
+    iRet = Application.Run("SAPExecuteCommand", "RegisterCallback", "BeforeFirstPromptsDisplay", "ControlPanel.Callback_BeforeFirstPromptsDisplay")
     Debug.Print Now, "Callback_BeforeFirstPromptsDisplay_Reg", iRet
+    bBeforeFirstPromptsDisplayRegistered = (iRet = 1)
 End Sub
 
 Private Sub Callback_BeforeFirstPromptsDisplay_UnReg()
@@ -1336,9 +1643,9 @@ End Sub
 
 Private Function IsSAPSetVariablesOnly(ds As String) As Boolean
     IsSAPSetVariablesOnly = True ' by default
-    With Me.ListObjects("VARIABLES")
+    With Me.ListObjects(sTableVariablesName)
         If Not .DataBodyRange Is Nothing Then
-            IsSAPSetVariablesOnly = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, _
+            IsSAPSetVariablesOnly = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CP_SCOPE").RefersToRange.Value, _
                     .ListColumns("Data Source").DataBodyRange, ds, _
                     .ListColumns("Command").DataBodyRange, "SAPSetFilter") = 0)
         End If
@@ -1346,9 +1653,9 @@ Private Function IsSAPSetVariablesOnly(ds As String) As Boolean
 End Function
 
 Private Function IsRepeatRefreshOn(ds As String) As Boolean
-    With Me.ListObjects("DATA_SOURCES")
+    With Me.ListObjects(sTableDataSourcesName)
         If Not .DataBodyRange Is Nothing Then
-            IsRepeatRefreshOn = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CONTROL_PANEL_SCOPE").RefersToRange.Value, _
+            IsRepeatRefreshOn = (WorksheetFunction.CountIfs(.ListColumns("Scope").DataBodyRange, Me.Names("CP_SCOPE").RefersToRange.Value, _
                     .ListColumns("Data Source").DataBodyRange, ds, _
                     .ListColumns("Repeat Refresh"), "Y") = 1)
         End If
@@ -1368,3 +1675,1263 @@ Private Sub WaitSeconds(intSeconds As Integer)
   Loop Until Now >= datTime
 
 End Sub
+
+' **************************** ACTIONS HANDLER ****************************
+' *************************************************************************
+Private Sub Actions_Trigger()
+    ' test
+    'Actions_Handler_Manual
+    Call Actions_Handler("9")
+End Sub
+
+Function Actions_Handler_Manual(Optional ActionID As String) As Boolean
+    bManualRefresh = True
+    Call Actions_Handler
+End Function
+
+Function Actions_Handler(Optional ActionID As String) As Boolean
+    ' go row by row of actions table, read parameters and call corresponding procedures
+    Dim row_id As Long
+    Dim sPath As String
+    Dim rSearchResult As Range
+    
+    On Error GoTo ErrHandler
+    Debug.Print Now, "Actions Handler " & ActionID
+    
+    With Me.ListObjects("CP_ACTIONS")
+    
+        If .DataBodyRange Is Nothing Then Exit Function
+        
+        Me.UsedRange.Calculate ' re-calc all formulas on ControlPanel
+        
+        If ActionID <> vbNullString Then
+            Set rSearchResult = .ListColumns("Action ID").DataBodyRange.Find(ActionID, , xlValues, xlWhole)
+            If Not rSearchResult Is Nothing Then
+                currentActionRowId = rSearchResult.Row - .HeaderRowRange.Row
+                Call Action_Handler(currentActionRowId)
+                Exit Function
+            End If
+        End If
+        
+        For row_id = 1 To .DataBodyRange.Rows.Count
+            currentActionRowId = row_id
+            ' skip disabled actions
+            If .ListColumns("Enabled").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
+                Call Action_Handler(currentActionRowId)
+            End If
+        Next row_id
+    End With ' Me.ListObjects("CP_ACTIONS")
+    
+    Actions_Handler = True
+    
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function Action_Handler(row_id As Long) As Boolean
+    On Error GoTo ErrHandler
+    Debug.Print Now, "Action Handler " & row_id
+    
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As & Email" Then
+            ' prepare file for email
+            Call Process_Email(row_id)
+            
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Refresh All" Then
+            ' special function as update is complex operation
+            Call UpdateConnections
+        
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As" Then
+            Call FileSave_Handler(row_id)
+            
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Email on Success" Then
+            If .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "SMTP" Then
+                Call Send_EMail_CDO(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email CC").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Subject").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Body").DataBodyRange.Cells(row_id, 1).Value, _
+                                    vbNullString, _
+                                    .ListColumns("Email Importancy").DataBodyRange.Cells(row_id, 1).Value)
+            ElseIf .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "Outlook" Then
+                Call Send_Email_Outlook(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email CC").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Subject").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Body").DataBodyRange.Cells(row_id, 1).Value, _
+                                    vbNullString, _
+                                    .ListColumns("Email Importancy").DataBodyRange.Cells(row_id, 1).Value)
+            End If
+        
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Run Macro" Then
+            On Error Resume Next
+            Application.Run .ListColumns("Macro Name").DataBodyRange.Cells(row_id, 1).Value
+            Debug.Print Now, "Action_Handler - Run Macro", Err.Number, Err.Description
+            Err.Clear
+            On Error GoTo ErrHandler
+        
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Clear Crosstabs" Then
+            Call ClearCrosstabs
+            
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save" Then
+            ' always keep backup of your file !!!
+            ThisWorkbook.Save
+        
+        ElseIf 1 = 2 Then
+        
+        End If
+    End With
+    
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Sub Process_Email(row_id As Long)
+    Dim sPath As String
+    
+    On Error GoTo ErrHandler
+    Debug.Print Now, "Process_Email"
+    
+    ' firstly we have to save file, then attach it to email
+    sPath = FileSave_Handler(row_id) ' saves file and return path
+    
+    If sPath <> vbNullString Then
+        With Me.ListObjects("CP_ACTIONS")
+            If .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "SMTP" Then
+                Call Send_EMail_CDO(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email CC").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Subject").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Body").DataBodyRange.Cells(row_id, 1).Value, _
+                                    sPath, _
+                                    .ListColumns("Email Importancy").DataBodyRange.Cells(row_id, 1).Value)
+            ElseIf .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "Outlook" Then
+                Call Send_Email_Outlook(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email CC").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Subject").DataBodyRange.Cells(row_id, 1).Value, _
+                                    .ListColumns("Email Body").DataBodyRange.Cells(row_id, 1).Value, _
+                                    sPath, _
+                                    .ListColumns("Email Importancy").DataBodyRange.Cells(row_id, 1).Value)
+            End If
+        End With
+    Else
+    ' write log - failed to save file
+    End If
+
+Exit_Sub:
+
+    Exit Sub
+    
+ErrHandler:
+    ' write log - failed to send email
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    GoTo Exit_Sub
+    Resume ' for debug
+End Sub
+
+Function FileSave_Handler(row_id As Long) As String
+     ' returns file path when successful of -1 if not
+    Dim sExtension As String
+    Dim sFolder As String
+    Dim sFileName As String
+    Dim sPath As String
+    
+    ' Possible cases
+    ' 1. File Format is not provided - use current workbook's format
+    '   2 if no sheets - send entire workbook
+    '    3. if no Folder - use %temp%
+    '       4 if no file name provided - use name of current workbook
+    '           5 if 'add current datetime' - add
+    '       else - use provided file name
+    '           if  'add current datetime' - add
+    '   else - list of sheets - create workbook with provided sheets
+    ' else - depends on provided File Format
+    
+    On Error GoTo ErrHandler
+    Debug.Print Now, "FileSave_Handler"
+    FileSave_Handler = FileSave_XOR_Folder(row_id)
+    Exit Function
+    
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    FileSave_Handler = vbNullString
+        
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function FileSave_XOR_Folder(row_id As Long) As String
+    Dim sFolder As String
+    On Error GoTo ErrHandler
+
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("Folder / Workspace").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
+            ' no Folder - use %temp% directory
+            sFolder = Environ("temp") & "\"
+        Else
+            sFolder = .ListColumns("Folder / Workspace").DataBodyRange.Cells(row_id, 1).Value
+            If Left(sFolder, 1) = "%" And Right(sFolder, 1) = "%" Then
+                If sFolder = "%temp%" Then
+                    sFolder = Environ("temp") & "\"
+                Else
+                    sFolder = CreateObject("WScript.Shell").SpecialFolders(Replace(sFolder, "%", vbNullString)) & "\"
+                End If
+            End If
+            If Left(sFolder, 4) = "http" Then
+                If Right(sFolder, 1) <> "/" Then: sFolder = sFolder & "/"
+            Else
+                ' not http folder
+                If Right(sFolder, 1) <> "\" Then: sFolder = sFolder & "\"
+            End If
+        End If ' check Folder / Workspace
+    End With
+    
+    FileSave_XOR_Folder = FileSave_XOR_FileName(row_id, sFolder)
+    
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    FileSave_XOR_Folder = vbNullString
+        
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function FileSave_XOR_FileName(row_id As Long, sFolder As String) As String
+    Dim sFileName As String
+    
+    On Error GoTo ErrHandler
+
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("File Name").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
+            ' if no file name provided - use name of current workbook
+            sFileName = Left(ThisWorkbook.Name, (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
+        Else
+            ' use provided name
+            sFileName = .ListColumns("File Name").DataBodyRange.Cells(row_id, 1).Value
+        End If ' File Name
+    End With
+    
+    FileSave_XOR_FileName = FileSave_XOR_DateTime(row_id, sFolder, sFileName)
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    FileSave_XOR_FileName = vbNullString
+        
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function FileSave_XOR_DateTime(row_id As Long, sFolder As String, sFileName As String) As String
+    Dim sFileNameNew As String
+    
+    On Error GoTo ErrHandler
+    
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("Add Current DateTime").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+            ' if 'add current datetime' - add
+            sFileNameNew = sFileName & " " & Format(Now(), .ListColumns("Add Current DateTime").DataBodyRange.Cells(row_id, 1).Value)
+        Else
+            sFileNameNew = sFileName
+        End If ' Add Current DateTime
+    End With
+    
+    FileSave_XOR_DateTime = FileSave_XOR_Extension(row_id, sFolder, sFileNameNew)
+        
+Exit_Sub:
+    
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, Err.Number, Err.Description
+    Err.Clear
+    If bManualRefresh Then Stop
+    
+    FileSave_XOR_DateTime = vbNullString
+        
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As String) As String
+    Dim sPath As String
+    Dim sTmp_path As String
+    Dim tmp_wb As Workbook
+    Dim sExtension As String
+    Dim sh As Worksheet
+    Dim i As Integer
+    Dim arr
+    Dim sResulting_FileFormat As String
+    Dim sCSVfiles As String
+    Dim sh_id As Integer
+    Dim bFound As Boolean
+    Dim sFileNameNew As String
+    
+    On Error GoTo ErrHandler
+    Debug.Print Now, "FileSave_XOR_Extension"
+    
+    ' define extension
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("File Format").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
+            ' take extension of current workbook
+            sExtension = Right(ThisWorkbook.Name, Len(ThisWorkbook.Name) - (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
+        Else
+            sExtension = "." & .ListColumns("File Format").DataBodyRange.Cells(row_id, 1).Value
+        End If
+    End With
+        
+    ' target path
+    sPath = sFolder & sFileName & LCase(sExtension)
+    
+    ' we cannot modify current workbook for 'SaveAs' and 'Send' actions
+    ' must save as new one - ALWAYS
+    ' this is the idea of additional actions
+    ' only action 'Save' will save current workbook inplace
+    ' for 'Saved As' workbook can be requested additional changes
+    ' such as 'Delete Sheets', 'Save Sheets', 'Sheets for Formulas to Values'
+    ' in addition, depending on 'File Format' we must use proper savinig method, especially PDF and CSV
+    
+    ' simplest way
+    ' if no modification requested, and same extension as current wb
+    If sExtension = Right(ThisWorkbook.Name, Len(ThisWorkbook.Name) - (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1)) Then
+        With Me.ListObjects("CP_ACTIONS")
+            If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
+               .ListColumns("Delete Sheets").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
+               .ListColumns("Delete WB Queries").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
+               .ListColumns("Sheets for Formulas to Values").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
+                ' if no modifications then just save
+                ThisWorkbook.SaveCopyAs sPath
+                FileSave_XOR_Extension = sPath
+                Exit Function
+            End If
+        End With
+    End If
+    
+    ' if method is "Copy/Paste" - applied only to xl* formats
+    With Me.ListObjects("CP_ACTIONS")
+        If .ListColumns("Saving Method").DataBodyRange.Cells(row_id, 1).Value = "Copy/Paste" Then
+            If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+                ' copy/paste specified sheets to a new workbook
+                arr = Split(.ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value, ",")
+                
+                Application.DisplayAlerts = False
+                Application.ScreenUpdating = False
+                ' transfer worksheets by Copy / Paste
+                Set tmp_wb = Application.Workbooks.Add
+                For Each sh In ThisWorkbook.Sheets
+                    For i = LBound(arr) To UBound(arr)
+                        If Trim(arr(i)) = sh.Name Then
+                            sh.Activate
+                            Call CopySheetValues(tmp_wb, sh.Name)
+                            Exit For  ' loop through array
+                        End If
+                    Next i
+                Next sh
+                
+                ' delete default worksheets from resulting workbook
+                sh_id = 1
+                Do While sh_id <= tmp_wb.Sheets.Count
+                    For i = LBound(arr) To UBound(arr)
+                        If Trim(arr(i)) = tmp_wb.Sheets(sh_id).Name Then
+                            bFound = True
+                            Exit For
+                        End If
+                    Next i
+                    
+                    If Not bFound Then
+                        tmp_wb.Sheets(sh_id).Visible = xlSheetVisible
+                        tmp_wb.Sheets(sh_id).Delete
+                        sh_id = sh_id - 1
+                    End If
+                    sh_id = sh_id + 1
+                    bFound = False
+                Loop
+                
+                ' jump to last action
+                GoTo Saving_Workbook
+            Else
+            ' nothing is specified - save all sheets ?
+            ' not supported so far
+            End If
+            
+        End If ' If .ListColumns("Saving Method").DataBodyRange.Cells(row_id, 1).Value = "Copy/Paste" Then
+    End With
+    
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    ' kind of GUID :), enough for such DIY solution
+    sTmp_path = Environ("temp") & "\" & sFileName & " " & Format(Now(), "yyyy-MM-dd hh-mm-ss") & Right(ThisWorkbook.Name, Len(ThisWorkbook.Name) - (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
+    ThisWorkbook.SaveCopyAs sTmp_path
+    Application.EnableEvents = False ' prevent macro in Workbook_Open
+    Application.Calculation = xlCalculationManual
+    ' open workbook
+    Set tmp_wb = Workbooks.Open(sTmp_path, UpdateLinks:=False)
+    
+    With Me.ListObjects("CP_ACTIONS")
+        If sExtension = ".CSV" Then
+            If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+                arr = Split(.ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value, ",")
+                
+                sCSVfiles = vbNullString
+                For Each sh In tmp_wb.Sheets
+                    For i = LBound(arr) To UBound(arr)
+                        If Trim(arr(i)) = sh.Name Then
+                            sh.Activate
+                            sFileNameNew = sFileName & " " & ReplaceIllegalChar(sh.Name)
+                            tmp_wb.SaveAs sFolder & sFileNameNew & ".csv", FileFormat:=xlCSV
+                            sCSVfiles = sCSVfiles & """" & sFolder & sFileNameNew & ".csv" & """" & "+"
+                            Exit For
+                        End If
+                    Next i
+                Next sh
+            End If
+            
+            
+            If .ListColumns("Combine CSV files").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
+                ' files can be combined by using shell command
+                ' copy 1.csv + 2.csv + ... N.csv Resulting.csv
+                        
+                If Left(sFolder, 4) <> "http" Then
+                    sCSVfiles = Left(sCSVfiles, Len(sCSVfiles) - 1) ' remove last +
+                    'Call Shell("cmd.exe /S /K " & "copy " & sCSVfiles & " " & """" & sFolder & sFileName & ".csv" & """", vbNormalFocus)
+                    Call Shell("cmd.exe /S /C " & "copy " & sCSVfiles & " " & """" & sFolder & sFileName & ".csv" & """", vbNormalFocus)
+                    ' https://stackoverflow.com/questions/17956651/execute-a-command-in-command-prompt-using-excel-vba
+                    ' https://stackoverflow.com/questions/15951837/wait-for-shell-command-to-complete
+                End If
+                
+                
+                FileSave_XOR_Extension = sFolder & sFileName & ".csv"
+            Else
+                ' last file
+                FileSave_XOR_Extension = sFolder & sFileNameNew & ".csv"
+            End If
+            GoTo Close_and_Exit
+        ElseIf sExtension = ".PDF" Then
+            FileSave_XOR_Extension = Save_Sheets_To_PDF(tmp_wb, _
+                .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value, _
+                sFolder, sFileName)
+            GoTo Close_and_Exit
+        End If
+    End With
+        
+    ' ************** part of special actions with target workbook **************
+    ' e.g. delete ControlPanel
+    ' tmp_wb.Sheets("ControlPanel").Delete
+    With Me.ListObjects("CP_ACTIONS")
+        
+        ' transform formulas to values for specified sheets
+        If .ListColumns("Sheets for Formulas to Values").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+            arr = Split(.ListColumns("Sheets for Formulas to Values").DataBodyRange.Cells(row_id, 1).Value, ",")
+            
+            For Each sh In tmp_wb.Sheets
+                For i = LBound(arr) To UBound(arr)
+                    If Trim(arr(i)) = sh.Name Then
+                        sh.Activate
+                        sh.UsedRange.Value = sh.UsedRange.Value
+                        Exit For
+                    End If
+                Next i
+            Next sh
+        End If
+        
+        ' remove unspecified sheets
+        If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+            arr = Split(.ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value, ",")
+            
+            sh_id = 1
+            Do While sh_id <= tmp_wb.Sheets.Count
+                For i = LBound(arr) To UBound(arr)
+                    If Trim(arr(i)) = tmp_wb.Sheets(sh_id).Name Then
+                        bFound = True
+                        Exit For
+                    End If
+                Next i
+                
+                If Not bFound Then
+                    tmp_wb.Sheets(sh_id).Visible = xlSheetVisible
+                    tmp_wb.Sheets(sh_id).Delete
+                    sh_id = sh_id - 1
+                End If
+                sh_id = sh_id + 1
+                bFound = False
+            Loop
+        End If
+        
+        ' delete specified sheets
+        If .ListColumns("Delete Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+            arr = Split(.ListColumns("Delete Sheets").DataBodyRange.Cells(row_id, 1).Value, ",")
+            
+            sh_id = 1
+            Do While sh_id <= tmp_wb.Sheets.Count
+                For i = LBound(arr) To UBound(arr)
+                    If Trim(arr(i)) = tmp_wb.Sheets(sh_id).Name Then
+                        tmp_wb.Sheets(sh_id).Visible = xlSheetVisible
+                        tmp_wb.Sheets(sh_id).Delete
+                        sh_id = sh_id - 1
+                        Exit For
+                    End If
+                Next i
+                sh_id = sh_id + 1
+            Loop
+        End If
+        
+        ' delete wb queries in target workbook
+        If .ListColumns("Delete WB Queries").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
+            Call DeleteQueriesAndConnections(tmp_wb)
+        End If
+    End With
+    
+Saving_Workbook:
+    If sExtension = ".xlsx" Then
+        sResulting_FileFormat = xlOpenXMLWorkbook
+    ElseIf sExtension = ".xlsb" Then
+        sResulting_FileFormat = xlExcel12
+    ElseIf sExtension = ".xlsm" Then
+        sResulting_FileFormat = xlOpenXMLWorkbookMacroEnabled
+    ElseIf sExtension = ".CSV" Then
+        sResulting_FileFormat = xlCSV
+    End If
+    
+    tmp_wb.SaveAs sPath, FileFormat:=sResulting_FileFormat
+
+    FileSave_XOR_Extension = sPath
+    
+Close_and_Exit:
+        
+Exit_Sub:
+    Application.Calculation = xlCalculationAutomatic
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    tmp_wb.Close ' in case of error in tmp_wb
+    Kill sTmp_path
+    ' just in case
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, "FileSave_XOR_Extension", Err.Number, Err.Description; ""
+    Err.Clear
+    If bManualRefresh Then Stop
+    FileSave_XOR_Extension = vbNullString
+    
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+Function Save_Sheets_To_PDF(wb As Workbook, sSheets As String, sFolder As String, sFileName As String)
+' sSheets expected as comma separated list
+    Dim arr
+    Dim i As Integer
+    
+    On Error GoTo ErrHandler
+    Debug.Print Now, "Save_Sheets_To_PDF"
+    If sSheets <> vbNullString Then
+        arr = Split(sSheets, ",")
+        
+        wb.Activate
+        wb.Sheets(Trim(arr(LBound(arr)))).Select Replace:=True
+        For i = LBound(arr) To UBound(arr)
+            wb.Sheets(Trim(arr(i))).Select Replace:=False
+        Next i
+        
+        ActiveSheet.ExportAsFixedFormat Type:=xlTypePDF, _
+            Filename:=sFolder & sFileName & ".pdf", _
+            Quality:=xlQualityStandard, _
+            IncludeDocProperties:=False, _
+            IgnorePrintAreas:=False, _
+            OpenAfterPublish:=False
+    Else
+        wb.Activate
+        ActiveWorkbook.ExportAsFixedFormat Type:=xlTypePDF, _
+            Filename:=sFolder & sFileName & ".pdf", _
+            Quality:=xlQualityStandard, _
+            IncludeDocProperties:=False, _
+            IgnorePrintAreas:=False, _
+            OpenAfterPublish:=False
+    End If
+    
+    Save_Sheets_To_PDF = sFolder & sFileName & ".pdf"
+Exit_Sub:
+
+    Exit Function
+    
+ErrHandler:
+    ' write log
+    Debug.Print Now, "Save_Sheets_To_PDF", Err.Number, Err.Description
+    Save_Sheets_To_PDF = vbNullString
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume ' for debug
+End Function
+
+
+Function Send_EMail_CDO(sFrom As String, _
+                    sRecipients As String, _
+                    sCC As String, _
+                    sSubject As String, _
+                    Optional sMessage As String, _
+                    Optional sAttachmentPath As String, _
+                    Optional Importance As String = "Normal")
+    Dim iMsg As Object
+    Dim iConf As Object
+    Dim strbody As String
+    Dim sSendUsing As String
+    Dim sAuthentication As String
+    Dim Flds
+    Dim szServer As String
+        
+    'https://www.experts-exchange.com/questions/23044027/CDO-Message-sendusing-and-smtpauthenticate.html
+    Const cdoSendUsingPickup = 1 'Send message using the local SMTP service pickup directory.
+    Const cdoSendUsingPort = 2 'Send the message using the network (SMTP over the network).
+    
+    Const cdoAnonymous = 0 'Do not authenticate
+    Const cdoBasic = 1 'basic (clear-text) authentication
+    Const cdoNTLM = 2 'NTLM
+ 
+    Dim oMyMail
+    
+    On Error GoTo ErrHandler
+    
+    If Me.Names("CP_STMP_SERVER").RefersToRange.Value = vbNullString Then
+        If bManualRefresh Then
+            MsgBox "Please, provide SMTP server!", vbExclamation
+            ThisWorkbook.Activate
+            Me.Names("CP_STMP_SERVER").RefersToRange.Select
+            Application.ScreenUpdating = True
+            Stop
+        Else
+            Debug.Print Now, "STMP server is not provided! Send CDO failed."
+            Exit Function
+        End If
+    End If
+        
+    Set oMyMail = CreateObject("CDO.Message")
+    Set iConf = CreateObject("CDO.Configuration")
+    Set Flds = iConf.Fields
+    szServer = "http://schemas.microsoft.com/cdo/configuration/"
+    
+    Select Case "Network"  '[SETTINGS_SMTP_SENDUSING].Value
+        Case "Network"
+            sSendUsing = cdoSendUsingPort
+        Case "Local Catalog"
+            sSendUsing = cdoSendUsingPickup
+    End Select
+    
+    If Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value <> vbNullString Then
+        sAuthentication = cdoBasic
+    Else
+        sAuthentication = cdoAnonymous
+    End If
+    
+    With Flds
+        .Item(szServer & "sendusing") = sSendUsing
+        .Item(szServer & "smtpserver") = Me.Names("CP_STMP_SERVER").RefersToRange.Value
+        .Item(szServer & "smtpserverport") = Me.Names("CP_STMP_PORT").RefersToRange.Value
+        .Item(szServer & "smtpconnectiontimeout") = 100 '[SETTINGS_SMTP_TIMEOUT].Value ' quick timeout
+        .Item(szServer & "smtpauthenticate") = sAuthentication
+        .Item(szServer & "smtpusessl") = IIf(Me.Names("CP_USE_SSL").RefersToRange.Value = "Y", True, False)
+        
+        If sAuthentication = cdoBasic Then
+            .Item(szServer & "sendusername") = Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value
+            
+            .Item(szServer & "sendpassword") = GetPassword(Me.Names("CP_STMP_SERVER").RefersToRange.Value, _
+                Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value)
+        Else
+            .Item(szServer & "smtpauthenticate") = 0
+        End If
+        .Update
+    End With
+    
+    With oMyMail
+            Set .Configuration = iConf
+            .bodypart.Charset = "utf-8"
+            .To = sRecipients
+            .from = IIf(Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value <> vbNullString, _
+                        Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value, _
+                        IIf(sFrom <> vbNullString, sFrom, "BOA Automation Tool"))
+                        
+            .Subject = sSubject
+            .TextBody = sMessage
+            
+            If sAttachmentPath <> vbNullString Then
+                .AddAttachment sAttachmentPath
+            End If
+            
+            .send
+    End With
+    
+    Send_EMail_CDO = True
+
+Exit_Sub:
+    Set oMyMail = Nothing
+    Set iConf = Nothing
+    Set Flds = Nothing
+    Exit Function
+
+ErrHandler:
+    ' write_log...
+    Debug.Print Now, "Send_EMail_CDO", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Function
+
+Function Send_Email_Outlook(sFrom As String, _
+                    sRecipients As String, _
+                    sCC As String, _
+                    sSubject As String, _
+                    Optional sMessage As String, _
+                    Optional sAttachmentPath As String, _
+                    Optional Importance As String = "Normal")
+    Dim oOutlook As Object
+    Dim oMyMail As Object
+    Const olMailItem = 0
+    
+    ' get or create outlook
+    On Error Resume Next
+    Set oOutlook = GetObject(, "Outlook.Application")
+    Err.Clear
+    
+    On Error GoTo ErrHandler
+    If oOutlook Is Nothing Then
+        Set oOutlook = CreateObject("Outlook.Application")
+    End If
+        
+    Set oMyMail = oOutlook.CreateItem(olMailItem)
+    
+    With oMyMail
+        If sFrom <> vbNullString Then
+            .SentOnBehalfOfName = sFrom
+        End If
+    
+        .To = sRecipients
+        If sCC <> vbNullString Then
+            .cc = sCC
+        End If
+        
+        .Subject = sSubject
+        
+        .body = sMessage
+        
+        If sAttachmentPath <> vbNullString Then
+            .Attachments.Add sAttachmentPath
+        End If
+        
+        ' Normal importance is default
+        Select Case Importance
+            Case "High"
+                .Importance = enumMailImportance.High
+            Case "Low"
+                .Importance = enumMailImportance.Low
+        End Select
+        
+        .send
+    End With
+    
+    Send_Email_Outlook = True
+
+Exit_Sub:
+    Set oMyMail = Nothing
+    Set oOutlook = Nothing
+    Exit Function
+
+ErrHandler:
+    ' write_log...
+    Debug.Print Now, "Send_Email_Outlook", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Function
+
+Function ReplaceIllegalChar(strIn As String) As String
+' https://www.experts-exchange.com/questions/28025657/Vba-Code-Eliminate-Illegal-Characters-from-a-filename.html
+    Dim j As Integer
+    Dim varStr As String, xStr As String
+    varStr = strIn
+    For j = 1 To Len(varStr)
+       Select Case Asc(Mid(varStr, j, 1))
+            Case 48 To 57, 65 To 90, 97 To 122
+            xStr = xStr & Mid(varStr, j, 1)
+       Case Else
+            xStr = xStr & "_"
+       End Select
+    Next
+    ReplaceIllegalChar = xStr
+End Function
+
+Function UpdateConnections() As Boolean
+    Dim cnct As Variant
+    Dim slc As SlicerCache
+    Dim BeforeAction
+    Dim target_wb As Workbook
+    
+    Debug.Print Now, "Updating connections..."
+    
+    Set target_wb = ThisWorkbook
+    
+    On Error Resume Next
+    If IsError(target_wb.Model.ModelTables.Count) Then
+        ' cannot access model
+        ' do nothing
+    Else
+        If target_wb.Model.ModelTables.Count > 0 Then
+            Application.StatusBar = "Initializing Data Model..."
+            target_wb.Model.Initialize
+            WaitSeconds 10
+            Application.StatusBar = vbNullString
+        End If
+    End If
+    
+    On Error GoTo ErrHandler
+    
+    ' deny background refresh
+    ' ToThink - probably worth to restore initial settings
+    ' however, if workbook is done for Power Refresh solution, it should not contain "background" connections
+    ' create 2D array, restore settings after update
+    Application.StatusBar = "Switching off background refresh..."
+    For Each cnct In target_wb.Connections
+        Select Case cnct.Type
+            Case xlConnectionTypeODBC
+                cnct.ODBCConnection.BackgroundQuery = False
+            Case xlConnectionTypeOLEDB
+                cnct.OLEDBConnection.BackgroundQuery = False
+        End Select
+    Next cnct
+    Application.StatusBar = vbNullString
+    
+    ' no need to turn on RefreshOnRefreshAll
+    ' can be scenario with own macro, that uses some connections
+    
+    Application.StatusBar = "Refreshing Data Model and Connections..."
+    target_wb.RefreshAll
+    Application.CalculateUntilAsyncQueriesDone
+    Sleep 500
+    DoEvents
+    
+    For Each cnct In target_wb.Connections
+        Select Case cnct.Type
+            Case xlConnectionTypeODBC
+                Do While cnct.ODBCConnection.Refreshing
+                    Sleep 200
+                    DoEvents
+                Loop
+            Case xlConnectionTypeOLEDB
+                Do While cnct.OLEDBConnection.Refreshing
+                    Sleep 200
+                    DoEvents
+                Loop
+        End Select
+    Next cnct
+    
+    Application.StatusBar = "Calculating after connections refresh..."
+    Application.Calculate
+    Application.CalculateUntilAsyncQueriesDone
+    
+    Application.StatusBar = "Waiting for cube formulas..."
+    ' wait for refresh of cube formulas
+    WaitSeconds 20
+    
+    If Err.Number <> 0 Then GoTo ErrHandler
+    
+    ' update cache after Model refresh
+    
+    Application.StatusBar = "Updating slicers..."
+    For Each slc In target_wb.SlicerCaches
+        slc.ClearManualFilter
+        slc.ClearAllFilters
+    Next slc
+    Application.StatusBar = vbNullString
+    ' if needed, slicer default value can be set in BeforeSave event of target workbook, or in custom macro
+    
+    ' for each
+    ' pivotCache.Refresh ?
+    ' I've seen issues with slicers after this method. Maybe fixed...
+    ' or maybe only if Pivot on DataModel...
+    
+    ' wait for refresh of cube formulas
+    If target_wb.SlicerCaches.Count > 0 Then
+        Application.StatusBar = "Calculating after slicers refresh..."
+        Application.Calculate
+        Application.CalculateUntilAsyncQueriesDone
+        Application.StatusBar = "Waiting for cube formulas..."
+        WaitSeconds 20
+        Application.StatusBar = vbNullString
+    End If
+    
+    If Not Application.CalculationState = xlDone Then
+        Application.StatusBar = "Waiting for application calculate..."
+        WaitSeconds 5
+        Application.StatusBar = vbNullString
+    End If
+    
+    UpdateConnections = True
+
+Exit_Function:
+    
+    Exit Function
+    
+ErrHandler:
+    Debug.Print Now, "Update Connections", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Function
+    Resume
+End Function
+
+Private Sub ClearCrosstabs()
+    Dim r As Long
+    
+    On Error GoTo ErrHandler
+    
+    If bCallActionFromDStable Then
+        ' do not go through all rows
+        ' clear only current ds row
+        With Me.ListObjects(sTableDataSourcesName)
+            With ThisWorkbook.Names(Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
+                                              .ListColumns("Crosstab").Range.Column)).RefersToRange
+                    If .Rows.Count > 1 Then
+                        .Offset(1, 0).Resize(.Rows.Count - 1, _
+                                             .Columns.Count).Clear
+                    End If
+            End With
+        End With
+    End If
+    
+    With Me.ListObjects(sTableDataSourcesName)
+        If .DataBodyRange Is Nothing Then
+            Exit Sub
+        Else
+            For r = 1 To .DataBodyRange.Rows.Count
+                If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
+                                Me.Names("CP_SCOPE").RefersToRange.Value Then
+                    
+                    'If .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" And
+                    If .ListColumns("Clear Crosstab").DataBodyRange.Cells(r, 1).Value = "Y" Then
+                        ' get range of crosstab
+                        With ThisWorkbook.Names(.ListColumns("Crosstab").DataBodyRange.Cells(r, 1).Value).RefersToRange
+                            If .Rows.Count > 1 Then
+                                .Offset(1, 0).Resize(.Rows.Count - 1, _
+                                                     .Columns.Count).Clear
+                                
+                            End If
+                        End With
+                    End If
+                End If
+            Next r ' row of Data Sources table
+        End If
+    End With
+
+Exit_Sub:
+    
+    Exit Sub
+    
+ErrHandler:
+    Debug.Print Now, "ClearCrosstabs", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Sub
+
+Private Sub FillHeaders(sCrosstab As String)
+    Dim i As Long
+    Dim col As Integer
+    
+    On Error GoTo ErrHandler
+    With ThisWorkbook.Names(sCrosstab).RefersToRange
+        If .Rows.Count > 1 Then
+            ' check first cell is empty - Show Scaling Factor is enabled
+            For i = 1 To .Rows.Count
+            ' search first non-empty cell in first column
+                If .Cells(i, 1) <> vbNullString Then
+                    
+                    For col = 2 To .Columns.Count
+                        If .Cells(i, col).Value = vbNullString Then
+                            If i = .Row Then
+                                ' for headers in first row - always fill
+                                .Cells(i, col).Value = .Cells(i, col - 1).Value & " Name"
+                            Else
+                                ' do not fill if there is something in prev row (possibly header)
+                                If .Cells(i - 1, col).Value = vbNullString Then
+                                    .Cells(i, col).Value = .Cells(i, col - 1).Value & " Name"
+                                End If
+                            End If
+                        End If
+
+                    Next col
+                    
+                    Exit For ' exit when first found line is filled
+                End If
+            Next i
+        End If
+    End With
+
+Exit_Sub:
+    
+    Exit Sub
+    
+ErrHandler:
+    Debug.Print Now, "FillHeaders", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Sub
+
+Private Sub CopySheetValues(target_wb As Workbook, shName As String)
+    Dim sh As Worksheet
+    
+    On Error GoTo ErrHandler
+    With ThisWorkbook.Sheets(shName)
+        .Activate
+        .Range(.Cells(1, 1), .UsedRange.SpecialCells(xlCellTypeLastCell)).Copy
+    End With
+        
+    On Error Resume Next
+    target_wb.Sheets(shName).Activate
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set sh = target_wb.Sheets.Add ' (after:=target_wb.Sheets.Count)
+        sh.Name = shName
+    End If
+    
+    On Error GoTo ErrHandler
+    With target_wb.Sheets(shName)
+        .Activate
+        With .[A1]
+            .PasteSpecial xlPasteValues ' just values
+            .PasteSpecial xlPasteColumnWidths
+            .PasteSpecial xlPasteFormats ' formats of cells - fill, borders, + Conditional Formatting etc.
+            .PasteSpecial xlPasteComments
+        End With
+    End With
+    
+    Application.CutCopyMode = False
+    Set sh = Nothing
+
+Exit_Sub:
+    
+    Exit Sub
+    
+ErrHandler:
+    Debug.Print Now, "CopySheetValues", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Sub
+
+
+Private Sub DeleteQueriesAndConnections(target_wb As Workbook)
+    
+    On Error Resume Next
+    Application.Cursor = xlWait
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    Do While target_wb.Queries.Count > 0
+        target_wb.Queries(1).Delete
+    Loop
+    
+    Do While target_wb.Connections.Count > 0
+        If target_wb.Connections(1).Name <> "ThisWorkbookDataModel" Then
+            target_wb.Connections(1).Delete
+        Else
+            If target_wb.Connections.Count = 1 Then Exit Do
+            target_wb.Connections(2).Delete
+        End If
+    Loop
+    
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+End Sub
+
+Private Sub SortDataSources()
+    On Error GoTo ErrHandler
+    Application.EnableEvents = False
+    With Me.ListObjects(sTableDataSourcesName)
+        .Sort.SortFields.Clear
+        
+        .Sort.SortFields.Add Key:=.ListColumns("Scope").Range, _
+                             SortOn:=xlSortOnValues, _
+                             order:=xlDescending, _
+                             DataOption:=xlSortNormal
+    
+        .Sort.SortFields.Add Key:=.ListColumns("Order").Range, _
+                             SortOn:=xlSortOnValues, _
+                             order:=xlAscending, _
+                             DataOption:=xlSortNormal
+                             
+        .Sort.SortFields.Add Key:=.ListColumns("Sheet").Range, _
+                             SortOn:=xlSortOnValues, _
+                             order:=xlAscending, _
+                             DataOption:=xlSortNormal
+                             
+        .Sort.SortFields.Add Key:=.ListColumns("Data Source Name").Range, _
+                             SortOn:=xlSortOnValues, _
+                             order:=xlAscending, _
+                             DataOption:=xlSortNormal
+                             
+        With .Sort
+            .Header = xlYes
+            .MatchCase = False
+            .Orientation = xlTopToBottom
+            .SortMethod = xlPinYin
+            .Apply
+        End With
+    End With
+
+Exit_Sub:
+    
+    Exit Sub
+    
+ErrHandler:
+    Debug.Print Now, "SortDataSources", Err.Number, Err.Description
+    Err.Clear
+    
+    If bManualRefresh Then Stop
+    GoTo Exit_Sub
+    Resume
+End Sub
+
+' *************************************************** EXPERIMENTAL PROCEDURES ***************************************************
+' *******************************************************************************************************************************
+Sub FakeCheckIfNoData(Optional t As String)
+    ' use this sub to test how Delay Functionality works
+    ' put FakeCheckIfNoData into MacrosAfter settings in data source table
+    If dummy = 0 Then
+        Me.Names("CP_DELAY").RefersToRange.Value = "Y"
+        dummy = 1
+    Else
+        Me.Names("CP_DELAY").RefersToRange.Value = "N"
+    End If
+End Sub
+
+Sub FakeTurnRepeatRefreshOn(Optional t As String)
+    ' use this sub to test how Repeat Refresh works
+    ' put FakeTurnRepeatRefreshOn into MacrosAfter settings in data source table
+    If dummy = 0 Then
+        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
+                Me.ListObjects(sTableDataSourcesName).ListColumns("Repeat Refresh").Range.Column).Value = "Y"
+        dummy = 1
+    Else
+        Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
+                Me.ListObjects(sTableDataSourcesName).ListColumns("Repeat Refresh").Range.Column).Value = vbNullString
+    End If
+End Sub
+
+Private Sub t()
+    'Debug.Print CreateObject("WScript.Shell").SpecialFolders("desktop") & "\"
+    'Debug.Print CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\"
+'    Dim col As ListColumn
+'    For Each col In Me.ListObjects(sTableDataSourcesName).ListColumns
+'        Debug.Print col.Name, col.DataBodyRange.HasFormula
+'    Next col
+ Call FillHeaders("SAPCrosstab2")
+End Sub
+
+Private Sub Style_Remover()
+    Dim sty As Style
+    On Error Resume Next
+    Application.ScreenUpdating = False
+
+    For Each sty In ThisWorkbook.Styles
+        If Not sty.BuiltIn Then
+            sty.Locked = False
+            sty.Delete
+        End If
+    Next sty
+
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub PrepareForPublishing()
+    ' clean tables and cells with parameters
+    '
+    Dim i As Long
+    
+    On Error Resume Next
+    Me.ListObjects(sTableDataSourcesName).DataBodyRange.Delete
+    Me.ListObjects(sTableVariablesName).DataBodyRange.Delete
+    
+    With Me.ListObjects("CP_ACTIONS").ListColumns("Enabled").DataBodyRange
+        For i = 1 To .Rows.Count
+            .Cells(i, 1).Value = "N"
+            Me.ListObjects("CP_ACTIONS").ListColumns("Email From").DataBodyRange.Cells(i, 1).Value = vbNullString
+            Me.ListObjects("CP_ACTIONS").ListColumns("Email To").DataBodyRange.Cells(i, 1).Value = vbNullString
+            Me.ListObjects("CP_ACTIONS").ListColumns("Email CC").DataBodyRange.Cells(i, 1).Value = vbNullString
+        Next i
+    End With
+    
+    Me.Names("CP_LAST_REPORT_DATE").RefersToRange.Value = vbNullString
+    Me.Names("CP_LAST_REFRESH_DATETIME").RefersToRange.Value = vbNullString
+    Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString
+    Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString
+    Me.Names("CP_STMP_SERVER").RefersToRange.Value = vbNullString
+    Me.Names("CP_STMP_PORT").RefersToRange.Value = vbNullString
+    Me.Names("CP_USE_SSL").RefersToRange.Value = vbNullString
+    Me.Names("CP_SMTP_USER_NAME").RefersToRange.Value = vbNullString
+    Me.Names("CP_STMP_PORT").RefersToRange.Value = vbNullString
+    
+    Call Style_Remover
+    
+End Sub
+
