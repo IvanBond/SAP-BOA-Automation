@@ -1,4 +1,4 @@
-## SAP BO Analysis for Offfice (BOAO) Automation
+## SAP BO Analysis for Office (BOAO) Automation
 
 This tool allows you to automate refresh of your workbooks with BOA data soures.
 If you have a workbook based on BOA and want to automate change of Variables or dimension Filters, and then refresh process itself - try this tool.
@@ -47,9 +47,3 @@ Assume you want to refresh same workbook for two different Sales Organizations.
 Easy. Just define two Scopes with corresponding values for variables.
 
 If you run refresh from outside of workbook, e.g. like it is shown in [Sample Refresher VB script](https://github.com/IvanBond/SAP-BOA-Automation/blob/master/Refresher%20Sample.vbs) - you can even run refresh in parallel.
-
-# Tables on ControlPanel
-
-![Scopes and Data Sources](https://bondarenkoivan.files.wordpress.com/2017/02/boa-automation-scopes-and-data-sources.png)
-
-![Variables](https://bondarenkoivan.files.wordpress.com/2017/02/boa-automation-variables-table.png)
