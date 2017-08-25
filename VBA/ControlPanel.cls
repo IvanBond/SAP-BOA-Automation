@@ -37,6 +37,10 @@ Rem Introduction
     ' now prefix for tables and named ranges is common: CP_ (from Control Panel)
     '
     
+    ' update 2017-08-19
+    ' improved logic of FillHeaders sub
+    
+    
     ' declaration of function that is used in Function CreatePath
     ' possibly will be used for logging
     
@@ -205,7 +209,7 @@ Function Refresh() As Boolean
                 GoTo Next_Scope
             Else
                 Me.Names("CP_SCOPE").RefersToRange.Value = _
-                    Me.ListObjects("CP_SCOPES").ListColumns("Scope").DataBodyRange.Cells(lScopeRow, 1).Value
+                    "'" & CStr(Me.ListObjects("CP_SCOPES").ListColumns("Scope").DataBodyRange.Cells(lScopeRow, 1).Value)
                 Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": calculating..."
                 Application.Calculate ' just in case
                 Application.StatusBar = vbNullString
@@ -239,6 +243,9 @@ Function Refresh() As Boolean
         Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On..."
         If Not LogOn_DataSources Then
             Debug.Print Now, "Couldn't LogOn"
+            If bManualRefresh Then
+                Stop
+            End If
             GoTo ErrHandler
         End If
         Application.StatusBar = vbNullString
@@ -264,6 +271,9 @@ Start_Refresh:
                     Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Logging On..."
                     If Not LogOn_DataSources Then
                         Debug.Print Now, "Couldn't LogOn"
+                        If bManualRefresh Then
+                            Stop
+                        End If
                         GoTo ErrHandler
                     End If
                     Application.StatusBar = vbNullString
@@ -280,6 +290,9 @@ Start_Refresh:
                                 arrDS(i, enumDataSource.DS_Language)) = 0 Then
                             
                             Debug.Print Now, "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                            If bManualRefresh Then
+                                Stop
+                            End If
                             GoTo ErrHandler
                         End If
                     Else
@@ -296,6 +309,9 @@ Start_Refresh:
                                     arrDS(i, enumDataSource.DS_Language)) = 0 Then
                                 
                                 Debug.Print Now, "Couldn't LogOn to " & CStr(arrDS(i, enumDataSource.DS_System))
+                                If bManualRefresh Then
+                                    Stop
+                                End If
                                 GoTo ErrHandler
                             End If
                         End If
@@ -347,7 +363,7 @@ Start_Refresh:
                         Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & " - Applying filters to " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
                         ' during ApplyScopeFilters macro will
                         ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
-                        If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                        If Not ApplyScopeFilters(CStr(Me.Names("CP_SCOPE").RefersToRange.Value), CStr(arrDS(i, enumDataSource.DS_ID))) Then
                             Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
                             If bManualRefresh Then
                                 Stop
@@ -380,7 +396,7 @@ Start_Refresh:
                             Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Applying filters to " & arrDS(i, enumDataSource.DS_ID) & "...(" & i & "/" & UBound(arrDS) & ")"
                             ' during ApplyScopeFilters macro will
                             ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
-                            If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                            If Not ApplyScopeFilters(CStr(Me.Names("CP_SCOPE").RefersToRange.Value), CStr(arrDS(i, enumDataSource.DS_ID))) Then
                                 Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
                                 If bManualRefresh Then
                                     Stop
@@ -427,7 +443,7 @@ Start_Refresh:
                             
                                 ' during ApplyScopeFilters macro will
                                 ' set PauseVariableSubmit to On, and SAPSetRefreshBehaviour to Off
-                                If Not ApplyScopeFilters(Me.Names("CP_SCOPE").RefersToRange.Value, CStr(arrDS(i, enumDataSource.DS_ID))) Then
+                                If Not ApplyScopeFilters(CStr(Me.Names("CP_SCOPE").RefersToRange.Value), CStr(arrDS(i, enumDataSource.DS_ID))) Then
                                     Debug.Print Now, "Couldn't Apply filters for " & CStr(arrDS(i, enumDataSource.DS_ID))
                                     GoTo ErrHandler
                                 End If
@@ -560,6 +576,7 @@ Start_Refresh:
                     ' calculate to get state of Repeat Refresh
                     Me.Cells(arrDS(i, enumDataSource.DS_Row), .ListColumns("Repeat Refresh").Range.Column).Calculate
                     If Me.Cells(arrDS(i, enumDataSource.DS_Row), .ListColumns("Repeat Refresh").Range.Column).Value = "Y" Then
+                        
                         GoTo Start_Refresh
                     End If
                 End With
@@ -713,8 +730,8 @@ Private Function LogOn_DataSources() As Boolean
         Else
             ' check if several languages in Scope
             For r = 1 To .DataBodyRange.Rows.Count
-                If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
-                                Me.Names("CP_SCOPE").RefersToRange.Value Then
+                If CStr(.ListColumns("Scope").DataBodyRange.Cells(r, 1).Value) = _
+                                CStr(Me.Names("CP_SCOPE").RefersToRange.Value) Then
                     ' Connection parameters - System, Client, Language
                     ' in 99.9% cases workbook use sames values for all three
                     ' however, sometimes we can meet workbooks with data from different systems
@@ -805,6 +822,9 @@ Private Function LogOn_DataSources() As Boolean
                     sLanguage) = 0 Then
                     
                     Debug.Print Now, "Couldn't log on to the system '" & CStr(dicSystems.Item(Key)) & "'"
+                    If bManualRefresh Then
+                        Stop
+                    End If
                     Exit Function ' leave Log_On_Systems as False
                 Else
                     LogOn_DataSources = True
@@ -1080,8 +1100,8 @@ Private Sub GetArrDS()
             ' fill array according to order of execution
             
             ' expected correct value in column Order
-            If .ListColumns("Scope").DataBodyRange.Cells(i, 1).Value = _
-                Me.Names("CP_SCOPE").RefersToRange.Value Then
+            If CStr(.ListColumns("Scope").DataBodyRange.Cells(i, 1).Value) = _
+                CStr(Me.Names("CP_SCOPE").RefersToRange.Value) Then
                 
                 arrDS(k, enumDataSource.DS_ID) = _
                     .ListColumns("Data Source").DataBodyRange.Cells(i, 1).Value
@@ -1529,7 +1549,7 @@ Private Sub GetListOfDS()
             On Error Resume Next
             arrDS(i, enumDataSource.DS_Sheet) = ThisWorkbook.Names("SAP" & tmpCrossTabs(i, 1)).RefersToRange.Parent.Name ' worksheet name
             ' not 100% precise method, can fail if user renamed NamedRange for crosstab
-            arrDS(0, enumDataSource.DS_Crosstab) = "SAP" & tmpCrossTabs(i, 1)
+            arrDS(i, enumDataSource.DS_Crosstab) = "SAP" & tmpCrossTabs(i, 1)
             Err.Clear
             On Error GoTo 0
         Next i
@@ -1567,7 +1587,7 @@ Private Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
     Dim scope As String
         
     Debug.Print Now, "Callback_BeforeFirstPromptsDisplay"
-    scope = Me.Names("CP_SCOPE").RefersToRange.Value
+    scope = CStr(Me.Names("CP_SCOPE").RefersToRange.Value)
     
     ' define arrays with Variables table columns - faster then read each cell
     With Me.ListObjects(sTableVariablesName)
@@ -1681,7 +1701,7 @@ End Sub
 Private Sub Actions_Trigger()
     ' test
     'Actions_Handler_Manual
-    Call Actions_Handler("9")
+    Call Actions_Handler("3")
 End Sub
 
 Function Actions_Handler_Manual(Optional ActionID As String) As Boolean
@@ -1694,6 +1714,7 @@ Function Actions_Handler(Optional ActionID As String) As Boolean
     Dim row_id As Long
     Dim sPath As String
     Dim rSearchResult As Range
+    Dim i As Long
     
     On Error GoTo ErrHandler
     Debug.Print Now, "Actions Handler " & ActionID
@@ -1705,7 +1726,15 @@ Function Actions_Handler(Optional ActionID As String) As Boolean
         Me.UsedRange.Calculate ' re-calc all formulas on ControlPanel
         
         If ActionID <> vbNullString Then
-            Set rSearchResult = .ListColumns("Action ID").DataBodyRange.Find(ActionID, , xlValues, xlWhole)
+            ' range.find doesn't work when table is hidden
+            'Set rSearchResult = .ListColumns("Action ID").DataBodyRange.Find(ActionID, , xlValues, xlWhole)
+            For i = 1 To .DataBodyRange.Rows.Count
+                If CStr(.ListColumns("Action ID").DataBodyRange.Cells(i, 1).Value) = ActionID Then
+                    Set rSearchResult = .DataBodyRange.Rows(i)
+                    Exit For
+                End If
+            Next i
+            
             If Not rSearchResult Is Nothing Then
                 currentActionRowId = rSearchResult.Row - .HeaderRowRange.Row
                 Call Action_Handler(currentActionRowId)
@@ -2123,7 +2152,10 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
                         If Trim(arr(i)) = sh.Name Then
                             sh.Activate
                             sFileNameNew = sFileName & " " & ReplaceIllegalChar(sh.Name)
-                            tmp_wb.SaveAs sFolder & sFileNameNew & ".csv", FileFormat:=xlCSV
+                            
+                            sh.Cells.ClearFormats
+                            
+                            tmp_wb.SaveAs sFolder & sFileNameNew & ".csv", FileFormat:=xlCSVUTF8, CreateBackup:=False
                             sCSVfiles = sCSVfiles & """" & sFolder & sFileNameNew & ".csv" & """" & "+"
                             Exit For
                         End If
@@ -2233,8 +2265,8 @@ Saving_Workbook:
         sResulting_FileFormat = xlExcel12
     ElseIf sExtension = ".xlsm" Then
         sResulting_FileFormat = xlOpenXMLWorkbookMacroEnabled
-    ElseIf sExtension = ".CSV" Then
-        sResulting_FileFormat = xlCSV
+'    ElseIf sExtension = ".CSV" Then
+'        sResulting_FileFormat = xlCSV
     End If
     
     tmp_wb.SaveAs sPath, FileFormat:=sResulting_FileFormat
@@ -2641,15 +2673,14 @@ Private Sub ClearCrosstabs()
     If bCallActionFromDStable Then
         ' do not go through all rows
         ' clear only current ds row
-        With Me.ListObjects(sTableDataSourcesName)
-            With ThisWorkbook.Names(Me.Cells(arrDS(currentDS_index, enumDataSource.DS_Row), _
-                                              .ListColumns("Crosstab").Range.Column)).RefersToRange
+        If Not ThisWorkbook.Names(CStr(arrDS(currentDS_index, enumDataSource.DS_Crosstab))).RefersToRange Is Nothing Then
+            With ThisWorkbook.Names(CStr(arrDS(currentDS_index, enumDataSource.DS_Crosstab))).RefersToRange
                     If .Rows.Count > 1 Then
                         .Offset(1, 0).Resize(.Rows.Count - 1, _
                                              .Columns.Count).Clear
                     End If
             End With
-        End With
+        End If
     End If
     
     With Me.ListObjects(sTableDataSourcesName)
@@ -2657,8 +2688,8 @@ Private Sub ClearCrosstabs()
             Exit Sub
         Else
             For r = 1 To .DataBodyRange.Rows.Count
-                If .ListColumns("Scope").DataBodyRange.Cells(r, 1).Value = _
-                                Me.Names("CP_SCOPE").RefersToRange.Value Then
+                If CStr(.ListColumns("Scope").DataBodyRange.Cells(r, 1).Value) = _
+                                CStr(Me.Names("CP_SCOPE").RefersToRange.Value) Then
                     
                     'If .ListColumns("Refresh?").DataBodyRange.Cells(r, 1).Value = "Y" And
                     If .ListColumns("Clear Crosstab").DataBodyRange.Cells(r, 1).Value = "Y" Then
@@ -2692,34 +2723,75 @@ End Sub
 Private Sub FillHeaders(sCrosstab As String)
     Dim i As Long
     Dim col As Integer
+    Dim bStyleMode As Boolean
+    Dim bMultiHeaderMode As Boolean
     
     On Error GoTo ErrHandler
+    If ThisWorkbook.Names(sCrosstab).RefersToRange Is Nothing Then Exit Sub
+    
     With ThisWorkbook.Names(sCrosstab).RefersToRange
+        If .Cells(1, 1).Style.Name = "SAPDimensionCell" Then
+            bStyleMode = True
+        End If ' check style in first cell
+        
         If .Rows.Count > 1 Then
-            ' check first cell is empty - Show Scaling Factor is enabled
-            For i = 1 To .Rows.Count
-            ' search first non-empty cell in first column
-                If .Cells(i, 1) <> vbNullString Then
-                    
-                    For col = 2 To .Columns.Count
-                        If .Cells(i, col).Value = vbNullString Then
-                            If i = .Row Then
-                                ' for headers in first row - always fill
+            If bStyleMode Then
+                If .Cells(2, 1).Style.Name = "SAPDimensionCell" Then
+                    bMultiHeaderMode = True
+                End If
+            Else
+                If .Cells(1, 1).Value = vbNullString Then
+                    bMultiHeaderMode = True
+                End If
+            End If
+        End If
+        
+        ' check first cell is empty - Show Scaling Factor is enabled
+        For i = 1 To .Rows.Count
+            ' when found non-empty cell in 1st column
+            If .Cells(i, 1) <> vbNullString Then
+                ' fill columns
+                For col = 2 To .Columns.Count
+                    ' when found empty cell - copy value from prior cell + ' Name'
+                    If .Cells(i, col).Value = vbNullString Then
+                        ' when we know style - it is safe method, we don't fill Scaling Factors
+                        If bStyleMode Then
+                            If .Cells(i, col).Style.Name = "SAPDimensionCell" Then
                                 .Cells(i, col).Value = .Cells(i, col - 1).Value & " Name"
-                            Else
+                            ElseIf .Cells(i, col).Style.Name = "SAPMemberCell" Then
+                                ' not repeated values of dimensions
+                                .Cells(i, col).Value = .Cells(i, col - 1).Value
+                            End If
+                        Else
+                        '   when we don't know style - have to check
+                            If bMultiHeaderMode Then
                                 ' do not fill if there is something in prev row (possibly header)
                                 If .Cells(i - 1, col).Value = vbNullString Then
                                     .Cells(i, col).Value = .Cells(i, col - 1).Value & " Name"
                                 End If
+                            Else
+                                ' only one row - fill all columns
+                                .Cells(i, col).Value = .Cells(i, col - 1).Value & " Name"
                             End If
                         End If
-
+                    End If ' If .Cells(i, col).Value = vbNullString Then
+                Next col
+                
+                Exit For ' exit when first found line is filled
+            Else
+            ' first cell is null - fill only when we know cell's style
+                If bStyleMode Then
+                    For col = 2 To .Columns.Count
+                        If .Cells(i, col).Value = vbNullString And _
+                           .Cells(i, col).Style.Name = "SAPMemberCell" Then
+                                ' for measure headers - fill members of dimensions
+                            .Cells(i, col).Value = .Cells(i, col - 1).Value
+                        End If
                     Next col
-                    
-                    Exit For ' exit when first found line is filled
                 End If
-            Next i
-        End If
+            End If ' if first row is not null
+        Next i
+            
     End With
 
 Exit_Sub:
@@ -2934,4 +3006,7 @@ Private Sub PrepareForPublishing()
     Call Style_Remover
     
 End Sub
+
+
+
 
