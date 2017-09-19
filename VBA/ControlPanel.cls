@@ -40,6 +40,9 @@ Rem Introduction
     ' update 2017-08-19
     ' improved logic of FillHeaders sub
     
+    ' update 2017-09-18
+    ' Run Actions after each Scope - new parameter
+    ' many minor changes
     
     ' declaration of function that is used in Function CreatePath
     ' possibly will be used for logging
@@ -122,6 +125,24 @@ Function Manual_Refresh() As Boolean
     Manual_Refresh = Refresh
 End Function
 
+Private Sub Worksheet_Activate()
+    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    End If
+    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    End If
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
+    End If
+    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
+        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
+    End If
+End Sub
+
 Private Sub DefineGlobalVariables()
     Set objFSO = CreateObject("Scripting.FileSystemObject")
     If Left(ThisWorkbook.Path, 4) <> "http" Then
@@ -147,6 +168,7 @@ Function Refresh() As Boolean
     Dim lScopeRow As Long
     Dim iRet As Integer
     Dim InitialCalculationState As Long
+    Dim bScopeFailed  As Boolean
     
     On Error GoTo ErrHandler
     
@@ -224,19 +246,22 @@ Function Refresh() As Boolean
             WaitSeconds 1
             Application.ScreenUpdating = False
         End If
-        
+                
         Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Collecting data sources..."
         Call GetArrDS  ' populate array with data sources
         Application.StatusBar = vbNullString
         
-        If Not IsArray(arrDS) Then
+        If WorksheetFunction.CountIf(Me.ListObjects(sTableDataSourcesName).ListColumns("Scope").DataBodyRange, _
+            CStr(Me.Names("CP_SCOPE").RefersToRange.Value)) = 0 Then
+            ' no data sources defined for scope
             If bManualRefresh Then
                 MsgBox "No Data Sources specified for scope '" & Me.Names("CP_SCOPE").RefersToRange.Value & "'." & vbCrLf _
                     & "Disable Scope or add Data Sources.", vbExclamation
-                GoTo Exit_Function
             Else
                 Debug.Print Now, "No Data Sources specified for scope " & Me.Names("CP_SCOPE").RefersToRange.Value
             End If
+            bScopeFailed = True
+            GoTo Next_Scope
         End If
         
         ' when common connection parameters are used - enough to logon once
@@ -588,11 +613,19 @@ Next_Data_Source:
     
         ' if 'Refresh All Scopes' mode is disabled - then quit from loop
         If Me.Names("CP_REFRESH_ALL_SCOPES").RefersToRange.Value <> "Y" Then
-            Exit For
+            Exit For ' Next lScopeRow
         End If
         
 Next_Scope:
-    Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Completed"
+
+        If Not bScopeFailed Then
+            If Me.Names("CP_RUN_ACTIONS_EACH_SCOPE").RefersToRange.Value = "Y" Then
+                Application.StatusBar = "Actions after " & Me.Names("CP_SCOPE").RefersToRange.Value
+                Call Actions_Handler
+            End If
+        End If
+        
+        Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Completed"
     Next lScopeRow
     
     arrMacrosAfter = Split(Me.Names("CP_MACROS_AFTER").RefersToRange.Value, ",")
@@ -622,7 +655,15 @@ Next_Scope:
         Round((Now() - StartPoint) * 3600 * 24 / 60, 0) & "m " & _
         FormatNumber(Round((Now() - StartPoint) * 3600 * 24, 0) Mod 60, 0) & "s")
     
-    Call Actions_Handler
+    ' if Refresh for All scopes enabled and Actions after each scope
+    ' Actions Handler was called after last enabled scope
+    ' no need to call it again
+    If Me.Names("CP_REFRESH_ALL_SCOPES").RefersToRange.Value = "Y" And _
+        Me.Names("CP_RUN_ACTIONS_EACH_SCOPE").RefersToRange.Value = "Y" Then
+        ' skip
+    Else
+        Call Actions_Handler
+    End If
     
     Refresh = True
             
@@ -861,8 +902,20 @@ Private Function GetPassword(system As String, username As String) As String
     On Error GoTo ErrHandler
     If objFSO Is Nothing Then Set objFSO = CreateObject("Scripting.FileSystemObject")
     
+    On Error Resume Next
     Set objFile = objFSO.OpenTextFile(Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value, ForReading)
-    
+    If Err.Number <> 0 Then
+        Err.Clear
+        Application.EnableEvents = False
+        Me.Cells(13, 5).Value = "File with passwords not found!"
+        Me.Cells(13, 5).Font.Color = 3
+        GoTo Exit_Function
+    End If
+    Application.EnableEvents = False
+    Me.Cells(13, 5).Value = vbNullString
+    Me.Cells(13, 5).ClearFormats
+        
+    On Error GoTo ErrHandler
     Do Until objFile.AtEndOfStream
         strLine = objFile.ReadLine
         If InStr(1, strLine, system, vbTextCompare) > 0 And _
@@ -885,7 +938,9 @@ ErrHandler:
     
     Application.ScreenUpdating = True
     Application.Cursor = xlDefault
-    If bManualRefresh Then Stop
+    Application.EnableEvents = True
+    ' do not stop when file not found
+    'If bManualRefresh Then Stop
     
     GoTo Exit_Function
     Resume
@@ -992,9 +1047,6 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
                 
-                Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
-                Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
-                
                 If Run(arr_var_command(variable_row, 1), _
                         arr_var_ds(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
@@ -1002,6 +1054,12 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     
                     Debug.Print Now, "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
                     Exit Function
+                Else
+                    Application.EnableEvents = False
+                    ' if successful - keep values
+                    Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                    Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                    Application.EnableEvents = True
                 End If ' successful command
                 sVariableValue = vbNullString
             End If ' var command
@@ -1040,10 +1098,7 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                 Else
                     sVariableValue = CStr(arr_var_value(variable_row, 1))
                 End If
-                
-                Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
-                Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
-                
+                                                
                 If Run(arr_var_command(variable_row, 1), _
                         arr_var_field(variable_row, 1), _
                         sVariableValue, _
@@ -1052,6 +1107,12 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
                     
                     Debug.Print Now, "Couldn't apply filter for variable " & CStr(arr_var_field(variable_row, 1)) & " : " & sVariableValue
                     GoTo Exit_Sub
+                Else
+                    Application.EnableEvents = False
+                    ' if successful - keep values
+                    Me.ListObjects(sTableVariablesName).ListColumns("Last Refresh").DataBodyRange.Cells(variable_row, 1).Value = Now()
+                    Me.ListObjects(sTableVariablesName).ListColumns("Last Used Value").DataBodyRange.Cells(variable_row, 1).Value = "'" & sVariableValue
+                    Application.EnableEvents = True
                 End If
                 sVariableValue = vbNullString
             End If ' var command
@@ -1060,6 +1121,9 @@ Private Function ApplyScopeFilters(scope As String, data_source As String) As Bo
     
     ApplyScopeFilters = True
 Exit_Sub:
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.EnableEvents = True
     Exit Function
 
 ErrHandler:
@@ -1068,6 +1132,7 @@ ErrHandler:
     
     Application.ScreenUpdating = True
     Application.Cursor = xlDefault
+    Application.EnableEvents = True
     If bManualRefresh Then Stop
     
     GoTo Exit_Sub
@@ -1164,27 +1229,10 @@ ErrHandler:
     Err.Clear
     Application.ScreenUpdating = True
     Application.Cursor = xlDefault
+    Application.EnableEvents = True
     If bManualRefresh Then Stop
     GoTo Exit_Sub
     Resume 'debug
-End Sub
-
-Private Sub Worksheet_Activate()
-    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
-    End If
-    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
-        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
-    End If
-End Sub
-
-Private Sub Worksheet_SelectionChange(ByVal Target As Range)
-    If Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = vbNullString Then
-        Me.Names("CP_PASSWORDS_PATH").RefersToRange.Value = CreateObject("WScript.Shell").SpecialFolders("mydocuments") & "\Passwords.txt"
-    End If
-    If Me.Names("CP_GENERAL_USER").RefersToRange.Value = vbNullString Then
-        Me.Names("CP_GENERAL_USER").RefersToRange.Value = LCase(Environ("username"))
-    End If
 End Sub
 
 Sub LogOffBOA()
@@ -1298,29 +1346,35 @@ AskWhatToCollect:
             
             If Application.Run("SAPGetProperty", "IsDataSourceActive", arrDS(i, enumDataSource.DS_ID)) Then
                 Application.StatusBar = "Collecting variables and filters..."
-                'Set r_ds = Me.ListObjects(sTableDataSourcesName).ListRows.Add(AlwaysInsert:=True)
+                Application.EnableEvents = False
                 Set r_ds = Me.ListObjects(sTableDataSourcesName).ListRows.Add(AlwaysInsert:=False)
                 
                 If bFirstCollection Then
-                    r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = "Main"
+                    r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Scope").Index) = "Main"
                 End If
                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet) ' Sheet Name
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Crosstab").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Crosstab)
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet) ' Sheet Name
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Crosstab").Index) = arrDS(i, enumDataSource.DS_Crosstab)
                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source Name").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                ' hyperlink to corresponding Crosstab
+                Me.Hyperlinks.Add Anchor:=r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Crosstab").Index), _
+                    Address:="", SubAddress:=arrDS(i, enumDataSource.DS_Crosstab), _
+                    TextToDisplay:=arrDS(i, enumDataSource.DS_Crosstab)
+                
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Data Source Name").Index) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "DataSourceName")
                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Query").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Query").Index) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "QueryTechName")
                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("System").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = _
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("System").Index) = _
                     Application.Run("SapGetSourceInfo", arrDS(i, enumDataSource.DS_ID), "System")
                                                 
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Refresh?").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = "Y"
-                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Order").DataBodyRange.Column - r_ds.Parent.Range.Column + 1) = order
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Refresh?").Index) = "Y"
+                r_ds.Range.Cells(1, r_ds.Parent.ListColumns("Order").Index) = order
                 order = order + 1
+                Application.EnableEvents = True
                 
                 If WhatToCollectResponse = "1" Or WhatToCollectResponse = "3" Then
                     ' Get Variables
@@ -1333,60 +1387,63 @@ AskWhatToCollect:
                             Err.Clear
                             On Error GoTo 0
                             ' 1-dimensional - only 1 variable
-                            'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                            Application.EnableEvents = False
                             Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                             
                             If bFirstCollection Then
-                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").Index) = "Main"
                             End If
                             
-                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                            r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
-                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                            r.Range.Cells(1, r.Parent.ListColumns("Command").Index) = "SAPSetVariable"
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet)
                             
-                            r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                            r.Range.Cells(1, r.Parent.ListColumns("Field").Index) = _
                                     Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(1), "TECHNICALNAME")
                                 
-                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(1)
-                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(2)
+                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").Index) = arrVar(1)
+                            r.Range.Cells(1, r.Parent.ListColumns("Value").Index) = "'" & arrVar(2)
+                            Application.EnableEvents = True
                         Else
                             ' two-dimentional
                             For Var = LBound(arrVar) To UBound(arrVar)
-                                'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                                Application.EnableEvents = False
                                 Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                                 
                                 If bFirstCollection Then
-                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
+                                    r.Range.Cells(1, r.Parent.ListColumns("Scope").Index) = "Main"
                                 End If
                             
-                                r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                                r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
-                                r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                                r.Range.Cells(1, r.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                                r.Range.Cells(1, r.Parent.ListColumns("Command").Index) = "SAPSetVariable"
+                                r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet)
                                 
-                                r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = _
+                                r.Range.Cells(1, r.Parent.ListColumns("Field").Index) = _
                                         Application.Run("SAPGetVariable", arrDS(i, enumDataSource.DS_ID), arrVar(Var, 1), "TECHNICALNAME")
                                     
-                                r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrVar(Var, 1)
-                                r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrVar(Var, 2)
+                                r.Range.Cells(1, r.Parent.ListColumns("Field Name").Index) = arrVar(Var, 1)
+                                r.Range.Cells(1, r.Parent.ListColumns("Value").Index) = "'" & arrVar(Var, 2)
+                                Application.EnableEvents = True
                             Next Var
                         End If
                         
                     Else ' If IsArray(arrVar) Then
                         ' if no variables in Data Source
-                        ' Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                        Application.EnableEvents = False
                         Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                         
                         If bFirstCollection Then
-                            r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
+                            r.Range.Cells(1, r.Parent.ListColumns("Scope").Index) = "Main"
                         End If
                         
-                        r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                        r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetVariable"
-                        r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                        r.Range.Cells(1, r.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                        r.Range.Cells(1, r.Parent.ListColumns("Command").Index) = "SAPSetVariable"
+                        r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet)
                         
-                        r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
-                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Not applicable"
-                        r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = ""
+                        r.Range.Cells(1, r.Parent.ListColumns("Field").Index) = ""
+                        r.Range.Cells(1, r.Parent.ListColumns("Field Name").Index) = "Not applicable"
+                        r.Range.Cells(1, r.Parent.ListColumns("Value").Index) = ""
+                        Application.EnableEvents = True
                     End If
                 End If ' WhatToCollectResponse = 1 or 3
                 
@@ -1406,51 +1463,52 @@ AskWhatToCollect:
                             Err.Clear
                             On Error GoTo 0
                             ' 1-dimensional - only 1 variable
-                            ' Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                            Application.EnableEvents = False
                             Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                             
                             If bFirstCollection Then
-                                r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
+                                r.Range.Cells(1, r.Parent.ListColumns("Scope").Index) = "Main"
                             End If
                             
-                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                            r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
-                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                            r.Range.Cells(1, r.Parent.ListColumns("Command").Index) = "SAPSetFilter"
+                            r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet)
                             
                             For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
                                  If arrDimensions(Dimen, 2) = arrFilters(1) Then
-                                    r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                    r.Range.Cells(1, r.Parent.ListColumns("Field").Index) = arrDimensions(Dimen, 1) ' technical name
                                     Exit For
                                  End If
                             Next Dimen
                                 
-                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(1)
-                            r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(2)
-                            
+                            r.Range.Cells(1, r.Parent.ListColumns("Field Name").Index) = arrFilters(1)
+                            r.Range.Cells(1, r.Parent.ListColumns("Value").Index) = "'" & arrFilters(2)
+                            Application.EnableEvents = True
                         Else
                             ' 2-deminsional
                             For Fil = LBound(arrFilters) To UBound(arrFilters)
                                 If arrFilters(Fil, 1) <> "Measures" Then
-                                    'Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=True)
+                                    Application.EnableEvents = False
                                     Set r = Me.ListObjects(sTableVariablesName).ListRows.Add(AlwaysInsert:=False)
                                     
                                     If bFirstCollection Then
-                                        r.Range.Cells(1, r.Parent.ListColumns("Scope").DataBodyRange.Column - r.Parent.Range.Column + 1) = "Main"
+                                        r.Range.Cells(1, r.Parent.ListColumns("Scope").Index) = "Main"
                                     End If
                                     
-                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_ID)
-                                    r.Range.Cells(1, r.Parent.ListColumns("Command").DataBodyRange.Column - r.Parent.Range.Column + 1) = "SAPSetFilter"
-                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDS(i, enumDataSource.DS_Sheet)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source").Index) = arrDS(i, enumDataSource.DS_ID)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Command").Index) = "SAPSetFilter"
+                                    r.Range.Cells(1, r.Parent.ListColumns("Data Source Sheet").Index) = arrDS(i, enumDataSource.DS_Sheet)
                                     
                                     For Dimen = LBound(arrDimensions) To UBound(arrDimensions)
                                          If arrDimensions(Dimen, 2) = arrFilters(Fil, 1) Then
-                                            r.Range.Cells(1, r.Parent.ListColumns("Field").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrDimensions(Dimen, 1) ' technical name
+                                            r.Range.Cells(1, r.Parent.ListColumns("Field").Index) = arrDimensions(Dimen, 1) ' technical name
                                             Exit For
                                          End If
                                     Next Dimen
                                         
-                                    r.Range.Cells(1, r.Parent.ListColumns("Field Name").DataBodyRange.Column - r.Parent.Range.Column + 1) = arrFilters(Fil, 1)
-                                    r.Range.Cells(1, r.Parent.ListColumns("Value").DataBodyRange.Column - r.Parent.Range.Column + 1) = "'" & arrFilters(Fil, 2)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Field Name").Index) = arrFilters(Fil, 1)
+                                    r.Range.Cells(1, r.Parent.ListColumns("Value").Index) = "'" & arrFilters(Fil, 2)
+                                    Application.EnableEvents = False
                                 End If ' if measures
                             Next Fil
                                             
@@ -1470,11 +1528,12 @@ Next_DS:
     
     End If ' If IsArray(arrDS) Then
 
-    Me.Range("DATA_SOURCES[#All]").RemoveDuplicates Header:=xlYes, _
-    Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+    Application.EnableEvents = False
+    Me.Range(sTableDataSourcesName & "[#All]").RemoveDuplicates Header:=xlYes, _
+    Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         
-    Me.Range("VARIABLES[#All]").RemoveDuplicates Header:=xlYes, _
-     Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    Me.Range(sTableVariablesName & "[#All]").RemoveDuplicates Header:=xlYes, _
+     Columns:=Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
     
     Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableDataSourcesName))
     Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableVariablesName))
@@ -1485,6 +1544,7 @@ Exit_Sub:
     Application.Cursor = xlDefault
     
     Application.StatusBar = vbNullString
+    Application.EnableEvents = True
     Application.ScreenUpdating = True
     Exit Sub
     
@@ -1493,6 +1553,7 @@ ErrHandler:
     Err.Clear
     Application.ScreenUpdating = True
     Application.Cursor = xlDefault
+    Application.EnableEvents = True
     
     If bManualRefresh Then Stop
     GoTo Exit_Sub
@@ -1560,15 +1621,42 @@ End Sub
 
 Private Sub ListObjectDeleteEmptyRows(lo As ListObject)
     Dim i As Long
+    Dim col As ListColumn
+    Dim bNonEmptyFound As Boolean
     If lo.DataBodyRange Is Nothing Then Exit Sub
     i = 1
+    ' TODO: replace by loop that ignores columns with hasformula
+    'Do While i <= lo.ListRows.Count
+    '    If WorksheetFunction.CountA(lo.ListRows(i).Range) = 0 Then
+    '        lo.ListRows(i).Delete
+    '        i = i - 1
+    '    End If
+    '    i = i + 1
+    'Loop
+    
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
     Do While i <= lo.ListRows.Count
-        If WorksheetFunction.CountA(lo.ListRows(i).Range) = 0 Then
+        For Each col In lo.ListColumns
+            If col.DataBodyRange.HasFormula Then
+                ' skip
+            Else
+                If lo.DataBodyRange.Cells(i, col.Index).Value <> vbNullString Then
+                    bNonEmptyFound = True
+                    Exit For
+                End If
+            End If
+        Next col
+        
+        If Not bNonEmptyFound Then
             lo.ListRows(i).Delete
             i = i - 1
         End If
+        
         i = i + 1
+        bNonEmptyFound = False
     Loop
+    
 End Sub
 
 Private Sub Callback_BeforeFirstPromptsDisplay(Optional dummy As Variant)
@@ -1773,16 +1861,20 @@ Function Action_Handler(row_id As Long) As Boolean
     With Me.ListObjects("CP_ACTIONS")
         If .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As & Email" Then
             ' prepare file for email
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save As & Email"
             Call Process_Email(row_id)
             
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Refresh All" Then
             ' special function as update is complex operation
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Refresh All"
             Call UpdateConnections
         
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save As"
             Call FileSave_Handler(row_id)
             
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Email on Success" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email on Successs"
             If .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "SMTP" Then
                 Call Send_EMail_CDO(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
@@ -1792,6 +1884,7 @@ Function Action_Handler(row_id As Long) As Boolean
                                     vbNullString, _
                                     .ListColumns("Email Importancy").DataBodyRange.Cells(row_id, 1).Value)
             ElseIf .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "Outlook" Then
+                Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email on Success"
                 Call Send_Email_Outlook(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email CC").DataBodyRange.Cells(row_id, 1).Value, _
@@ -1802,6 +1895,7 @@ Function Action_Handler(row_id As Long) As Boolean
             End If
         
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Run Macro" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Run Macro"
             On Error Resume Next
             Application.Run .ListColumns("Macro Name").DataBodyRange.Cells(row_id, 1).Value
             Debug.Print Now, "Action_Handler - Run Macro", Err.Number, Err.Description
@@ -1809,9 +1903,11 @@ Function Action_Handler(row_id As Long) As Boolean
             On Error GoTo ErrHandler
         
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Clear Crosstabs" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Clear Crosstabs"
             Call ClearCrosstabs
             
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save"
             ' always keep backup of your file !!!
             ThisWorkbook.Save
         
@@ -1821,7 +1917,7 @@ Function Action_Handler(row_id As Long) As Boolean
     End With
     
 Exit_Sub:
-
+    Application.StatusBar = vbNullString
     Exit Function
     
 ErrHandler:
@@ -2153,8 +2249,11 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
                             sh.Activate
                             sFileNameNew = sFileName & " " & ReplaceIllegalChar(sh.Name)
                             
-                            sh.Cells.ClearFormats
+                            Application.DisplayAlerts = False
+                            Application.ScreenUpdating = False
                             
+                            ' clear formats
+                            sh.Cells.ClearFormats
                             tmp_wb.SaveAs sFolder & sFileNameNew & ".csv", FileFormat:=xlCSVUTF8, CreateBackup:=False
                             sCSVfiles = sCSVfiles & """" & sFolder & sFileNameNew & ".csv" & """" & "+"
                             Exit For
@@ -2258,6 +2357,8 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
         End If
     End With
     
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
 Saving_Workbook:
     If sExtension = ".xlsx" Then
         sResulting_FileFormat = xlOpenXMLWorkbook
@@ -2285,6 +2386,7 @@ Exit_Sub:
     Application.DisplayAlerts = True
     Application.EnableEvents = True
     Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
     Exit Function
     
 ErrHandler:
@@ -2370,7 +2472,8 @@ Function Send_EMail_CDO(sFrom As String, _
     Const cdoBasic = 1 'basic (clear-text) authentication
     Const cdoNTLM = 2 'NTLM
  
-    Dim oMyMail
+    Dim oMyMail As Object
+    Dim objShell As Object
     
     On Error GoTo ErrHandler
     
@@ -2380,13 +2483,16 @@ Function Send_EMail_CDO(sFrom As String, _
             ThisWorkbook.Activate
             Me.Names("CP_STMP_SERVER").RefersToRange.Select
             Application.ScreenUpdating = True
+            Application.Cursor = xlDefault
+            Application.EnableEvents = True
             Stop
         Else
             Debug.Print Now, "STMP server is not provided! Send CDO failed."
             Exit Function
         End If
     End If
-        
+    
+    Set objShell = CreateObject("WScript.Shell")
     Set oMyMail = CreateObject("CDO.Message")
     Set iConf = CreateObject("CDO.Configuration")
     Set Flds = iConf.Fields
@@ -2433,7 +2539,10 @@ Function Send_EMail_CDO(sFrom As String, _
                         IIf(sFrom <> vbNullString, sFrom, "BOA Automation Tool"))
                         
             .Subject = sSubject
-            .TextBody = sMessage
+            .TextBody = sMessage & vbCrLf & _
+                vbCrLf & _
+                ThisWorkbook.Name & vbCrLf & _
+                objShell.ExpandEnvironmentStrings("%COMPUTERNAME%")
             
             If sAttachmentPath <> vbNullString Then
                 .AddAttachment sAttachmentPath
@@ -2469,6 +2578,8 @@ Function Send_Email_Outlook(sFrom As String, _
                     Optional Importance As String = "Normal")
     Dim oOutlook As Object
     Dim oMyMail As Object
+    Dim objShell As Object
+    
     Const olMailItem = 0
     
     ' get or create outlook
@@ -2480,7 +2591,8 @@ Function Send_Email_Outlook(sFrom As String, _
     If oOutlook Is Nothing Then
         Set oOutlook = CreateObject("Outlook.Application")
     End If
-        
+    
+    Set objShell = CreateObject("WScript.Shell")
     Set oMyMail = oOutlook.CreateItem(olMailItem)
     
     With oMyMail
@@ -2495,7 +2607,10 @@ Function Send_Email_Outlook(sFrom As String, _
         
         .Subject = sSubject
         
-        .body = sMessage
+        .body = sMessage & vbCrLf & _
+            vbCrLf & _
+            ThisWorkbook.Name & vbCrLf & _
+            objShell.ExpandEnvironmentStrings("%COMPUTERNAME%")
         
         If sAttachmentPath <> vbNullString Then
             .Attachments.Add sAttachmentPath
@@ -2613,6 +2728,7 @@ Function UpdateConnections() As Boolean
     Application.Calculate
     Application.CalculateUntilAsyncQueriesDone
     
+    ' TODO: check if workbook contains cube formulas
     Application.StatusBar = "Waiting for cube formulas..."
     ' wait for refresh of cube formulas
     WaitSeconds 20
@@ -2871,9 +2987,6 @@ Private Sub DeleteQueriesAndConnections(target_wb As Workbook)
         End If
     Loop
     
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
-    Application.Cursor = xlDefault
 End Sub
 
 Private Sub SortDataSources()
@@ -2882,9 +2995,9 @@ Private Sub SortDataSources()
     With Me.ListObjects(sTableDataSourcesName)
         .Sort.SortFields.Clear
         
-        .Sort.SortFields.Add Key:=.ListColumns("Scope").Range, _
+        .Sort.SortFields.Add Key:=.ListColumns("Scope Order").Range, _
                              SortOn:=xlSortOnValues, _
-                             order:=xlDescending, _
+                             order:=xlAscending, _
                              DataOption:=xlSortNormal
     
         .Sort.SortFields.Add Key:=.ListColumns("Order").Range, _
@@ -2918,6 +3031,9 @@ Exit_Sub:
 ErrHandler:
     Debug.Print Now, "SortDataSources", Err.Number, Err.Description
     Err.Clear
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.EnableEvents = True
     
     If bManualRefresh Then Stop
     GoTo Exit_Sub
@@ -2980,6 +3096,8 @@ Private Sub PrepareForPublishing()
     '
     Dim i As Long
     
+    Call ListObjectDeleteEmptyRows(Me.ListObjects(sTableDataSourcesName))
+    
     On Error Resume Next
     Me.ListObjects(sTableDataSourcesName).DataBodyRange.Delete
     Me.ListObjects(sTableVariablesName).DataBodyRange.Delete
@@ -3006,7 +3124,3 @@ Private Sub PrepareForPublishing()
     Call Style_Remover
     
 End Sub
-
-
-
-
