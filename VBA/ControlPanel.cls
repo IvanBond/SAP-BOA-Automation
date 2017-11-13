@@ -3206,6 +3206,230 @@ Private Sub PrepareForPublishing()
     
 End Sub
  
-Sub test()
+Private Sub test()
     Debug.Print Me.PivotTables.Count
 End Sub
+
+Private Sub CreateNames()
+    Dim sID As String
+    Dim sFormat As String
+    Dim sPartStart As String
+    Dim sPartEnd As String
+    Dim sPart As String
+    Dim sFullIDStart As String
+    Dim sFullIDEnd As String
+    Dim sFullID As String
+    Const sMainPrefix = "CP_DATE"
+    On Error Resume Next
+    
+' names must be visible to be used in formulas by end-user
+'    Me.Names("CP_DATE_RDM_START_END_DDMMYYYY").Visible = True
+    
+    sPartStart = "START"
+    sPartEnd = "END"
+    sPart = "START_END"
+    
+    ' Report Date Year
+    Me.Names.Add Name:="CP_DATE_RDY", _
+        RefersTo:="=YEAR( CP_REPORT_DATE )"
+        
+    sID = "RDM" ' RDM = Report Date Month
+        sFormat = "MMYYYY"
+            ' START MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( CP_REPORT_DATE, CP_DATE_FORMAT_MMYYYY )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+        
+        sFormat = "0MMYYYY"
+            ' START 0MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( CP_REPORT_DATE, CP_DATE_FORMAT_0MMYYYY )"
+            ' END 0MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END 0MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+            
+        sFormat = "DDMMYYYY"
+        ' DD.MM.YYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            ' START DDMMYYYY
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1)+1, CP_DATE_FORMAT_DDMMYYYY )"
+            ' END DDMMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, 0), CP_DATE_FORMAT_DDMMYYYY )"
+            ' START - END DDMMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    
+    
+    ' Prior to Report Date Month
+    sID = "PRDM"
+        sFormat = "MMYYYY"
+            ' START MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_MMYYYY )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+        
+        sFormat = "0MMYYYY"
+            ' START 0MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_0MMYYYY )"
+            ' END 0MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END 0MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+                    
+        sFormat = "DDMMYYYY"
+            ' START DDMMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2)+1, CP_DATE_FORMAT_DDMMYYYY )"
+            ' END DDMMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_DDMMYYYY )"
+            ' START - END DDMMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+            
+        ' Prior to 'Report Date Month' Year
+            Me.Names.Add Name:="CP_DATE_PRDM_YYYY", _
+                RefersToR1C1:="=YEAR( EOMONTH( CP_REPORT_DATE, -1) )"
+    
+    
+    ' Prev to PrioR to Report Date Month
+    sID = "PPRDM"
+        sFormat = "MMYYYY"
+            ' MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersToR1C1:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_MMYYYY )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+                                
+        sFormat = "0MMYYYY"
+            ' START 0MMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_0MMYYYY )"
+            ' END 0MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=" & sFullIDStart
+            ' START - END 0MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+                                    
+        sFormat = "DDMMYYYY"
+            ' START DDMMYYYY
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -3)+1, CP_DATE_FORMAT_DDMMYYYY )"
+            ' END DDMMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_DDMMYYYY )"
+            ' START - END DDMMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    
+    ' Last Two Months Excluding = LTM_EXC
+    sID = "CP_DATE_LTM_EXC"
+        sFormat = "MMYYYY"
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_" & sFormat & " )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+        
+        sFormat = "0MMYYYY"
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_" & sFormat & " )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+        
+        sFormat = "DDMMYYYY"
+            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+            Me.Names.Add Name:=sFullIDStart, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -3)+1, CP_DATE_FORMAT_" & sFormat & " )"
+            ' END MMYYYY
+            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+            Me.Names.Add Name:=sFullIDEnd, _
+                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
+            ' START - END MMYYYY
+            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+            Me.Names.Add Name:=sFullID, _
+                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    
+    
+    ' START 0MMYYYY
+    ' END 0MMYYYY
+    ' START - END 0MMYYYY
+    ' START DDMMYYYY
+    ' END DDMMYYYY
+    ' START - END DDMMYYYY
+                    
+    ' for period
+    ' START MMYYYY
+    ' END MMYYYY
+    ' START - END MMYYYY
+    ' START 0MMYYYY
+    ' END 0MMYYYY
+    ' START - END 0MMYYYY
+    ' START DDMMYYYY
+    ' END DDMMYYYY
+    ' START - END DDMMYYYY
+    
+End Sub
+
