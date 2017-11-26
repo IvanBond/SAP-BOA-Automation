@@ -44,6 +44,10 @@ Rem Introduction
     ' Run Actions after each Scope - new parameter
     ' many minor changes
     
+    ' upadte 2017-11-26
+    ' new parameters for some actions
+    ' named ranges for relative dates
+    
     ' declaration of function that is used in Function CreatePath
     ' possibly will be used for logging
     
@@ -2523,8 +2527,7 @@ Function Send_EMail_CDO(sFrom As String, _
                     Optional Importance As String = "Normal", _
                     Optional sCC As String, _
                     Optional sBCC As String)
-                    
-                    
+                                    
     Dim iMsg As Object
     Dim iConf As Object
     Dim strbody As String
@@ -3211,225 +3214,125 @@ Private Sub test()
 End Sub
 
 Private Sub CreateNames()
-    Dim sID As String
-    Dim sFormat As String
-    Dim sPartStart As String
-    Dim sPartEnd As String
-    Dim sPart As String
-    Dim sFullIDStart As String
-    Dim sFullIDEnd As String
-    Dim sFullID As String
-    Const sMainPrefix = "CP_DATE"
+    
+    Const ReportDateCell = "CP_REPORT_DATE"
+    
     On Error Resume Next
     
-' names must be visible to be used in formulas by end-user
-'    Me.Names("CP_DATE_RDM_START_END_DDMMYYYY").Visible = True
-    
-    sPartStart = "START"
-    sPartEnd = "END"
-    sPart = "START_END"
+    ' names must be visible to be used in formulas by end-user
+    '    Me.Names("CP_DATE_RDM_START_END_DDMMYYYY").Visible = True
     
     ' Report Date Year
-    Me.Names.Add Name:="CP_DATE_RDY", _
-        RefersTo:="=YEAR( CP_REPORT_DATE )"
-        
-    sID = "RDM" ' RDM = Report Date Month
-        sFormat = "MMYYYY"
-            ' START MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( CP_REPORT_DATE, CP_DATE_FORMAT_MMYYYY )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-        
-        sFormat = "0MMYYYY"
-            ' START 0MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( CP_REPORT_DATE, CP_DATE_FORMAT_0MMYYYY )"
-            ' END 0MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END 0MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-            
-        sFormat = "DDMMYYYY"
-        ' DD.MM.YYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            ' START DDMMYYYY
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1)+1, CP_DATE_FORMAT_DDMMYYYY )"
-            ' END DDMMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, 0), CP_DATE_FORMAT_DDMMYYYY )"
-            ' START - END DDMMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    Me.Names.Add Name:="CP_DATE_RDY", RefersTo:="=YEAR( CP_REPORT_DATE )"
+    ' Prior to 'Report Date Month' Year
+    Me.Names.Add Name:="CP_DATE_PRDM_YYYY", RefersTo:="=YEAR( EOMONTH( CP_REPORT_DATE, -1) )"
     
-    
+    ' Report Date Month
+    Call CreateNamesWithFormats("RDM", "EOMONTH( CP_REPORT_DATE, -1 )+1", "EOMONTH( CP_REPORT_DATE, 0 )")
+        
     ' Prior to Report Date Month
-    sID = "PRDM"
-        sFormat = "MMYYYY"
-            ' START MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_MMYYYY )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    Call CreateNamesWithFormats("PRDM", "EOMONTH( CP_REPORT_DATE, -2 )+1", "EOMONTH( CP_REPORT_DATE, -1 )")
+    
+    ' Prev to Prior to Report Date Month
+    Call CreateNamesWithFormats("PPRDM", "EOMONTH( CP_REPORT_DATE, -3 )+1", "EOMONTH( CP_REPORT_DATE, -2 )")
         
-        sFormat = "0MMYYYY"
-            ' START 0MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_0MMYYYY )"
-            ' END 0MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END 0MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-                    
-        sFormat = "DDMMYYYY"
-            ' START DDMMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2)+1, CP_DATE_FORMAT_DDMMYYYY )"
-            ' END DDMMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_DDMMYYYY )"
-            ' START - END DDMMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-            
-        ' Prior to 'Report Date Month' Year
-            Me.Names.Add Name:="CP_DATE_PRDM_YYYY", _
-                RefersToR1C1:="=YEAR( EOMONTH( CP_REPORT_DATE, -1) )"
-    
-    
-    ' Prev to PrioR to Report Date Month
-    sID = "PPRDM"
-        sFormat = "MMYYYY"
-            ' MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersToR1C1:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_MMYYYY )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-                                
-        sFormat = "0MMYYYY"
-            ' START 0MMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_0MMYYYY )"
-            ' END 0MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=" & sFullIDStart
-            ' START - END 0MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-                                    
-        sFormat = "DDMMYYYY"
-            ' START DDMMYYYY
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -3)+1, CP_DATE_FORMAT_DDMMYYYY )"
-            ' END DDMMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_DDMMYYYY )"
-            ' START - END DDMMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
-    
     ' Last Two Months Excluding = LTM_EXC
-    sID = "CP_DATE_LTM_EXC"
-        sFormat = "MMYYYY"
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_" & sFormat & " )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    Call CreateNamesWithFormats("LTM_EXC", "EOMONTH( CP_REPORT_DATE, -3 )+1", "EOMONTH( CP_REPORT_DATE, -1 )")
         
-        sFormat = "0MMYYYY"
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -2), CP_DATE_FORMAT_" & sFormat & " )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    ' RDM in PY - Same RD month in Prior Year
+    Call CreateNamesWithFormats("RDM_IN_PY", "EOMONTH( CP_REPORT_DATE, -13 )+1", "EOMONTH( CP_REPORT_DATE, -12 )")
         
-        sFormat = "DDMMYYYY"
-            sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
-            Me.Names.Add Name:=sFullIDStart, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -3)+1, CP_DATE_FORMAT_" & sFormat & " )"
-            ' END MMYYYY
-            sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
-            Me.Names.Add Name:=sFullIDEnd, _
-                RefersTo:="=TEXT( EOMONTH( CP_REPORT_DATE, -1), CP_DATE_FORMAT_" & sFormat & " )"
-            ' START - END MMYYYY
-            sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
-            Me.Names.Add Name:=sFullID, _
-                RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    ' PRDM in PY, 'Prior to RDM' in Prior Year
+    Call CreateNamesWithFormats("PRDM_IN_PY", "EOMONTH( CP_REPORT_DATE, -14 )+1", "EOMONTH( CP_REPORT_DATE, -13 )")
     
+    ' R12m RDM INC - Rolling 12 months including RDM
+    Call CreateNamesWithFormats("R12M_RDM_INC", "EOMONTH( CP_REPORT_DATE, -12 )+1", "EOMONTH( CP_REPORT_DATE, 0 )")
     
-    ' START 0MMYYYY
-    ' END 0MMYYYY
-    ' START - END 0MMYYYY
-    ' START DDMMYYYY
-    ' END DDMMYYYY
-    ' START - END DDMMYYYY
-                    
-    ' for period
-    ' START MMYYYY
-    ' END MMYYYY
-    ' START - END MMYYYY
-    ' START 0MMYYYY
-    ' END 0MMYYYY
-    ' START - END 0MMYYYY
-    ' START DDMMYYYY
-    ' END DDMMYYYY
-    ' START - END DDMMYYYY
+    ' R12m RDM EXC - Rolling 12 months to RDM excluding
+    Call CreateNamesWithFormats("R12M_RDM_EXC", "EOMONTH( CP_REPORT_DATE, -13 )+1", "EOMONTH( CP_REPORT_DATE, -1 )")
+    
+    ' R4m RDM INC - Rolling 4 months to RDM including
+    Call CreateNamesWithFormats("R4M_RDM_INC", "EOMONTH( CP_REPORT_DATE, -4 )+1", "EOMONTH( CP_REPORT_DATE, 0 )")
+        
+    ' R4m RDM EXC - Rolling 4 months to RDM including
+    Call CreateNamesWithFormats("R4M_RDM_EXC", "EOMONTH( CP_REPORT_DATE, -5 )+1", "EOMONTH( CP_REPORT_DATE, -1 )")
+        
+    ' CP_DATE_YTD_RDM - YTD to RDM including
+    Call CreateNamesWithFormats("YTD_RDM", "DATE( YEAR(CP_REPORT_DATE),1,1)", "EOMONTH( CP_REPORT_DATE, 0 )")
+        
+    ' CP_DATE_YTD_PRDM - YTD calculated for 'Prior RDM'
+    Call CreateNamesWithFormats("YTD_PRDM", "DATE( YEAR(EOMONTH(CP_REPORT_DATE,-1)),1,1)", "EOMONTH( CP_REPORT_DATE, -1 )")
+            
+    ' YTD PY to RD month - YTD calculated for 'RDM in PY'
+    Call CreateNamesWithFormats("YTD_RDM_IN_PY", "DATE( YEAR(CP_REPORT_DATE)-1,1,1)", "EOMONTH( CP_REPORT_DATE, -12 )")
+    
+    ' YTD PY to prior RD month - YTD calculated for 'PRDM in PY'
+    Call CreateNamesWithFormats("YTD_PRDM_IN_PY", "DATE( YEAR(EOMONTH(CP_REPORT_DATE,-1))-1,1,1)", "EOMONTH( CP_REPORT_DATE, -13 )")
+    
+    ' PY_CY_TO_RDM including. E.g. 01.2016 - 10.2017
+    Call CreateNamesWithFormats("PY_CY_TO_RDM", "DATE( YEAR(CP_REPORT_DATE)-1,1,1)", "EOMONTH( CP_REPORT_DATE, 0 )")
+    
+    ' PY_CY_TO_PRDM including. E.g. 01.2016 - 09.2017
+    Call CreateNamesWithFormats("PY_CY_TO_PRDM", "DATE( YEAR(EOMONTH(CP_REPORT_DATE,-1))-1,1,1)", "EOMONTH( CP_REPORT_DATE, -1 )")
+    
+    ' PY_R12M_RDM, R12m in PY to 'RDM in PY', 11.2015 - 10.2016
+    Call CreateNamesWithFormats("PY_R12M_RDM", "EOMONTH( CP_REPORT_DATE, -24 )+1", "EOMONTH( CP_REPORT_DATE, -12 )")
+    
+    ' PY_R12M_PRDM, R12m in PY to 'RDM in PY', 10.2015 - 09.2016
+    Call CreateNamesWithFormats("PY_R12M_PRDM", "EOMONTH( CP_REPORT_DATE, -25 )+1", "EOMONTH( CP_REPORT_DATE, -13 )")
+    
+    ' PY_R4M_RDM, R4m in PY for RDM, 07.2016 - 10.2016
+    Call CreateNamesWithFormats("PY_R4M_RDM", "EOMONTH( CP_REPORT_DATE, -12-4 )+1", "EOMONTH( CP_REPORT_DATE, -12 )")
+    
+    ' PY_R4M_PRDM, R4m in PY for PRDM, 06.2016 - 09.2016
+    Call CreateNamesWithFormats("PY_R4M_PRDM", "EOMONTH( CP_REPORT_DATE, -13-4 )+1", "EOMONTH( CP_REPORT_DATE, -13 )")
+    
+    ' PRDY_FULL, Prior to Report Date Year - Full, 01.2016 - 12.2016
+    Call CreateNamesWithFormats("PRDY_FULL", "DATE( YEAR(CP_REPORT_DATE)-1,1,1)", "DATE( YEAR(CP_REPORT_DATE)-1,12,31)")
+    
+    ' RDY_FULL, Report Date Year Full, 01.2017 - 12.2017
+    Call CreateNamesWithFormats("RDY_FULL", "DATE( YEAR(CP_REPORT_DATE),1,1)", "DATE( YEAR(CP_REPORT_DATE),12,31)")
     
 End Sub
 
+Private Sub CreateNamesWithFormats(sID As String, sStartFormula As String, sEndFormula As String)
+    Call CreateName(sID, "MMYYYY", sStartFormula, sEndFormula)
+    Call CreateName(sID, "0MMYYYY", sStartFormula, sEndFormula)
+    Call CreateName(sID, "DDMMYYYY", sStartFormula, sEndFormula)
+End Sub
+
+Private Sub CreateName(sID As String, sFormat As String, sStartFormula As String, sEndFormula As String)
+    Const sPartStart = "START"
+    Const sPartEnd = "END"
+    Const sPart = "START_END"
+    Dim sFullID As String
+    Dim sFullIDStart As String
+    Dim sFullIDEnd As String
+    Dim sFullIDStartDate As String
+    Dim sFullIDEndDate As String
+    
+    Const sMainPrefix = "CP_DATE"
+    
+    On Error Resume Next
+    
+    ' As Date
+    sFullIDStartDate = sMainPrefix & "_" & sID & "_" & sPartStart & "_DATE"
+    Me.Names.Add Name:=sFullIDStartDate, RefersTo:="=" & sStartFormula
+    
+    sFullIDEndDate = sMainPrefix & "_" & sID & "_" & sPartEnd & "_DATE"
+    Me.Names.Add Name:=sFullIDEndDate, RefersTo:="=" & sEndFormula
+    
+    ' FORMATTED
+    ' START
+    sFullIDStart = sMainPrefix & "_" & sID & "_" & sPartStart & "_" & sFormat
+    Me.Names.Add Name:=sFullIDStart, _
+        RefersTo:="=TEXT( " & sFullIDStartDate & ", CP_DATE_FORMAT_" & sFormat & " )"
+    ' END
+    sFullIDEnd = sMainPrefix & "_" & sID & "_" & sPartEnd & "_" & sFormat
+    Me.Names.Add Name:=sFullIDEnd, _
+        RefersTo:="=TEXT( " & sFullIDEndDate & ", CP_DATE_FORMAT_" & sFormat & " )"
+    ' START - END
+    sFullID = sMainPrefix & "_" & sID & "_" & sPart & "_" & sFormat
+    Me.Names.Add Name:=sFullID, RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
+    
+End Sub
