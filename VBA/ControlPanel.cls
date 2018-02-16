@@ -1791,16 +1791,41 @@ End Function
 
 ' http://www.fmsinc.com/microsoftaccess/modules/examples/avoiddoevents.asp
 Private Sub WaitSeconds(intSeconds As Integer)
-  Dim datTime As Date
+    Dim datTime As Date
+    Dim sStatusBarInitial As String
+    Dim k As Integer
+    Dim bScreenUpdatingInitial As Boolean
+    Dim CursorInitial As Double
+    
+    With Application
+        bScreenUpdatingInitial = .ScreenUpdating
+        CursorInitial = .Cursor
+        sStatusBarInitial = IIf(.StatusBar <> False, .StatusBar, vbNullString)
+        
+        .ScreenUpdating = False
+        .Cursor = xlWait
+    End With
+    
+    datTime = DateAdd("s", intSeconds, Now)
+    Do
+        ' 255 chars is limit of status bar
+        If Len(Application.StatusBar) + Len(CStr(CStr(intSeconds - k)) & "...") > 255 Then
+            Application.StatusBar = Left(Left(sStatusBarInitial, 255 - Len(CStr(intSeconds - k) & "...") - 1) _
+                & " " & CStr(intSeconds - k) & "...", 255)
+        Else
+            Application.StatusBar = sStatusBarInitial & " " & CStr(intSeconds - k) & "..."
+        End If
+        ' Yield to other programs (better than using DoEvents which eats up all the CPU cycles)
+        Sleep 1000
+        DoEvents
+        k = k + 1
+    Loop Until Now >= datTime
 
-  datTime = DateAdd("s", intSeconds, Now)
-
-  Do
-   ' Yield to other programs (better than using DoEvents which eats up all the CPU cycles)
-    Sleep 100
-    DoEvents
-  Loop Until Now >= datTime
-
+    With Application
+        .StatusBar = sStatusBarInitial
+        .ScreenUpdating = bScreenUpdatingInitial
+        .Cursor = CursorInitial
+    End With
 End Sub
 
 ' **************************** ACTIONS HANDLER ****************************
@@ -1886,7 +1911,7 @@ Function Action_Handler(row_id As Long) As Boolean
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Refresh All" Then
             ' special function as update is complex operation
             Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Refresh All"
-            Call UpdateConnections
+            Call RefreshWorkbook
         
         ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As" Then
             Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save As"
@@ -2470,7 +2495,7 @@ ErrHandler:
     Resume ' for debug
 End Function
 
-Function Save_Sheets_To_PDF(wb As Workbook, sSheets As String, sFolder As String, sFileName As String)
+Function Save_Sheets_To_PDF(Wb As Workbook, sSheets As String, sFolder As String, sFileName As String)
 ' sSheets expected as comma separated list
     Dim arr
     Dim i As Integer
@@ -2480,10 +2505,10 @@ Function Save_Sheets_To_PDF(wb As Workbook, sSheets As String, sFolder As String
     If sSheets <> vbNullString Then
         arr = Split(sSheets, ",")
         
-        wb.Activate
-        wb.Sheets(Trim(arr(LBound(arr)))).Select Replace:=True
+        Wb.Activate
+        Wb.Sheets(Trim(arr(LBound(arr)))).Select Replace:=True
         For i = LBound(arr) To UBound(arr)
-            wb.Sheets(Trim(arr(i))).Select Replace:=False
+            Wb.Sheets(Trim(arr(i))).Select Replace:=False
         Next i
         
         ActiveSheet.ExportAsFixedFormat Type:=xlTypePDF, _
@@ -2493,7 +2518,7 @@ Function Save_Sheets_To_PDF(wb As Workbook, sSheets As String, sFolder As String
             IgnorePrintAreas:=False, _
             OpenAfterPublish:=False
     Else
-        wb.Activate
+        Wb.Activate
         ActiveWorkbook.ExportAsFixedFormat Type:=xlTypePDF, _
             Filename:=sFolder & sFileName & ".pdf", _
             Quality:=xlQualityStandard, _
@@ -2750,15 +2775,38 @@ Function ReplaceIllegalChar(strIn As String) As String
     ReplaceIllegalChar = xStr
 End Function
 
-Function UpdateConnections() As Boolean
+Function RefreshWorkbook(Optional Wb As Workbook) As Boolean
     Dim cnct As Variant
     Dim slc As SlicerCache
     Dim BeforeAction
     Dim target_wb As Workbook
+    Dim bCubeFormulasFound As Boolean
+    Dim bScreenUpdatingInitial As Boolean
+    Dim bEnableEventsInitial As Boolean
+    Dim CalcModeInitial As Double
+    Dim CursorStateInitial As Double
     
+    On Error GoTo ErrHandler
     Debug.Print Now, "Updating connections..."
     
-    Set target_wb = ThisWorkbook
+    With Application
+        bScreenUpdatingInitial = .ScreenUpdating
+        bEnableEventsInitial = .EnableEvents
+        CalcModeInitial = .Calculation
+        CursorStateInitial = .Cursor
+        
+        ' switch everything off
+        .ScreenUpdating = False
+        .EnableEvents = False
+        .Calculation = xlCalculationManual
+        .Cursor = xlWait
+    End With
+    
+    If Wb Is Nothing Then
+        Set target_wb = ThisWorkbook
+    Else
+        Set target_wb = Wb
+    End If
     
     On Error Resume Next
     If IsError(target_wb.Model.ModelTables.Count) Then
@@ -2768,11 +2816,11 @@ Function UpdateConnections() As Boolean
         If target_wb.Model.ModelTables.Count > 0 Then
             Application.StatusBar = "Initializing Data Model..."
             target_wb.Model.Initialize
-            WaitSeconds 10
-            Application.StatusBar = vbNullString
+            WaitSeconds 5
         End If
     End If
     
+    Err.Clear
     On Error GoTo ErrHandler
     
     ' deny background refresh
@@ -2788,28 +2836,22 @@ Function UpdateConnections() As Boolean
                 cnct.OLEDBConnection.BackgroundQuery = False
         End Select
     Next cnct
-    Application.StatusBar = vbNullString
-    
-    ' no need to turn on RefreshOnRefreshAll
-    ' can be scenario with own macro, that uses some connections
     
     Application.StatusBar = "Refreshing Data Model and Connections..."
     target_wb.RefreshAll
+    WaitSeconds 1
     Application.CalculateUntilAsyncQueriesDone
-    Sleep 500
-    DoEvents
+    WaitSeconds 1
     
     For Each cnct In target_wb.Connections
         Select Case cnct.Type
             Case xlConnectionTypeODBC
                 Do While cnct.ODBCConnection.Refreshing
-                    Sleep 200
-                    DoEvents
+                    WaitSeconds 1
                 Loop
             Case xlConnectionTypeOLEDB
                 Do While cnct.OLEDBConnection.Refreshing
-                    Sleep 200
-                    DoEvents
+                    WaitSeconds 1
                 Loop
         End Select
     Next cnct
@@ -2817,58 +2859,140 @@ Function UpdateConnections() As Boolean
     Application.StatusBar = "Calculating after connections refresh..."
     Application.Calculate
     Application.CalculateUntilAsyncQueriesDone
+    WaitSeconds 1
     
-    ' TODO: check if workbook contains cube formulas
-    Application.StatusBar = "Waiting for cube formulas..."
-    ' wait for refresh of cube formulas
-    WaitSeconds 20
-    
-    If Err.Number <> 0 Then GoTo ErrHandler
+    Application.StatusBar = "Checking existence of cube formulas..."
+    bCubeFormulasFound = IsWBHasCubeFormulas(target_wb)
     
     ' update cache after Model refresh
-    
+    ' ignore all possible errors with slicers
+    On Error Resume Next
     Application.StatusBar = "Updating slicers..."
     For Each slc In target_wb.SlicerCaches
         slc.ClearManualFilter
         slc.ClearAllFilters
+        'slc.ClearDateFilter
     Next slc
-    Application.StatusBar = vbNullString
+    Err.Clear
+    On Error GoTo ErrHandler
     ' if needed, slicer default value can be set in BeforeSave event of target workbook, or in custom macro
     
-    ' for each
-    ' pivotCache.Refresh ?
-    ' I've seen issues with slicers after this method. Maybe fixed...
-    ' or maybe only if Pivot on DataModel...
-    
-    ' wait for refresh of cube formulas
-    If target_wb.SlicerCaches.Count > 0 Then
-        Application.StatusBar = "Calculating after slicers refresh..."
-        Application.Calculate
-        Application.CalculateUntilAsyncQueriesDone
+    If bCubeFormulasFound Then
+        ' wait for refresh of cube formulas
+        If target_wb.SlicerCaches.Count > 0 Then
+            Application.StatusBar = "Calculating after slicers refresh..."
+            Application.Calculate
+            Application.CalculateUntilAsyncQueriesDone
+        End If
+        
         Application.StatusBar = "Waiting for cube formulas..."
         WaitSeconds 20
-        Application.StatusBar = vbNullString
     End If
     
     If Not Application.CalculationState = xlDone Then
-        Application.StatusBar = "Waiting for application calculate..."
+        ' infinite loop can be trully infinite
+        ' so just delay
+        Application.StatusBar = "Waiting for application to calculate..."
         WaitSeconds 5
-        Application.StatusBar = vbNullString
     End If
-    
-    UpdateConnections = True
+        
+    RefreshWorkbook = True
 
 Exit_Function:
+    On Error Resume Next
+    
+    ' restore initial state
+    With Application
+        .ScreenUpdating = bScreenUpdatingInitial
+        .EnableEvents = bEnableEventsInitial
+        .Calculation = CalcModeInitial
+        .Cursor = CursorStateInitial
+        .StatusBar = vbNullString
+    End With
     
     Exit Function
     
 ErrHandler:
-    Debug.Print Now, "Update Connections", Err.Number, Err.Description
-    Err.Clear
+    Debug.Print Now, "Update Connections", Err.Number, Err.Description, Application.StatusBar
     
-    If bManualRefresh Then Stop
+    If bManualRefresh Then
+        Application.Cursor = xlDefault
+        Stop
+    End If
+    
+    Err.Clear
     GoTo Exit_Function
-    Resume
+    Resume ' for debug purpose
+End Function
+
+Private Function IsWBHasCubeFormulas(Optional Wb As Workbook) As Boolean
+    Dim sh As Worksheet
+    Dim cell As Range
+    Dim bFound As Boolean
+    Dim bScreenUpdatingInitial As Boolean
+    Dim bEnableEventsInitial As Boolean
+    Dim CalcModeInitial As Integer
+    Dim rngFormulas As Range
+    
+    On Error GoTo ErrHandler
+    
+    If Wb Is Nothing Then
+        Set Wb = ThisWorkbook ' ActiveWorkbook ' alternatively
+    End If
+    
+    With Application
+        bScreenUpdatingInitial = .ScreenUpdating
+        bEnableEventsInitial = .EnableEvents
+        CalcModeInitial = .Calculation
+        
+        ' switch everything off
+        .ScreenUpdating = False
+        .EnableEvents = False
+        .Calculation = xlCalculationManual
+    End With
+    
+    For Each sh In Wb.Sheets
+        'Debug.Print sh.Name
+        
+        Err.Clear
+        On Error Resume Next
+        Set rngFormulas = sh.Cells.SpecialCells(xlCellTypeFormulas)
+        bFound = (Err.Number = 0) ' no error, means SpecialCells returned non-empty range
+        Err.Clear
+        On Error GoTo ErrHandler
+        
+        ' if result of SpecialCells was non-empty - check formulas
+        If bFound Then
+            For Each cell In rngFormulas
+                'Debug.Print cell.Formula
+                If Left(cell.Formula, 5) = "=CUBE" Then
+                    IsWBHasCubeFormulas = True
+                    GoTo Exit_Function
+                End If
+            Next cell
+        End If
+    Next sh
+    
+Exit_Function:
+    On Error Resume Next
+    
+    ' restore initial state
+    With Application
+        .ScreenUpdating = bScreenUpdatingInitial
+        .EnableEvents = bEnableEventsInitial
+        .Calculation = CalcModeInitial
+    End With
+    
+    Exit Function
+    
+ErrHandler:
+    If Err.Number <> 0 Then
+        Debug.Print Now, "IsWBHasCubeFormulas", Err.Number & ": " & Err.Description
+        Err.Clear
+    End If
+    
+    GoTo Exit_Function
+    Resume ' for debug purpose
 End Function
 
 Private Sub ClearCrosstabs()
