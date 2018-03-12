@@ -14,6 +14,7 @@ Rem Introduction
     ' Author: Ivan Bondarenko
     ' Initial release: 2017-01
     ' https://bondarenkoivan.wordpress.com
+    ' http://excel.city
     ' https://linkedin.com/in/bondarenkoivan/en
 
     ' Big Thanks to Andres Merino for ideas and testing!
@@ -44,9 +45,14 @@ Rem Introduction
     ' Run Actions after each Scope - new parameter
     ' many minor changes
     
-    ' upadte 2017-11-26
+    ' update 2017-11-26
     ' new parameters for some actions
     ' named ranges for relative dates
+    
+    ' update 2018-03-12
+    ' Email on Success renamed to Email
+    ' minor fixes
+    ' added comments
     
     ' declaration of function that is used in Function CreatePath
     ' possibly will be used for logging
@@ -254,11 +260,19 @@ Function Refresh() As Boolean
             WaitSeconds 1
             Application.ScreenUpdating = False
         End If
-                
+        
         Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Collecting data sources..."
         Call GetArrDS  ' populate array with data sources
         Application.StatusBar = vbNullString
         
+        On Error Resume Next
+        Debug.Print Now, "# Data sources: "; UBound(arrDS)
+        If Err.Number <> 0 Then
+            Err.Clear
+            GoTo Skipped_Data_Sources
+        End If
+        On Error GoTo ErrHandler
+                
         ' old version - check if any Data Sources defined
 '        If WorksheetFunction.CountIf(Me.ListObjects(sTableDataSourcesName).ListColumns("Scope").DataBodyRange, _
 '            CStr(Me.Names("CP_SCOPE").RefersToRange.Value)) = 0 Then
@@ -625,7 +639,8 @@ Start_Refresh:
             
 Next_Data_Source:
         Next i ' next Data source
-    
+
+Skipped_Data_Sources:
         ' if 'Refresh All Scopes' mode is disabled - then quit from loop
         If Me.Names("CP_REFRESH_ALL_SCOPES").RefersToRange.Value <> "Y" Then
             Exit For ' Next lScopeRow
@@ -682,6 +697,8 @@ Next_Scope:
             
 Exit_Function:
     On Error Resume Next
+    
+    Erase arrDS
     
     If Not bManualRefresh Then
         Application.StatusBar = "Logging off..."
@@ -772,6 +789,7 @@ Private Function LogOn_DataSources() As Boolean
     Dim sClient   As String
     Dim dicSystems As Object
     Dim Key
+    Dim n As Long
     
     On Error GoTo ErrHandler
     
@@ -780,8 +798,21 @@ Private Function LogOn_DataSources() As Boolean
     
     With Me.ListObjects(sTableDataSourcesName)
         If .DataBodyRange Is Nothing Then
+            LogOn_DataSources = True
             Exit Function
         Else
+            ' check if any data sources in scope
+            ' number of data sources in Scope
+            n = WorksheetFunction.CountIf(Me.ListObjects(sTableDataSourcesName).ListColumns("Scope").DataBodyRange, _
+                Me.Names("CP_SCOPE").RefersToRange.Value)
+            
+            If n = 0 Then
+                Debug.Print Now, "No data sources defined for scope " & Me.Names("CP_SCOPE").RefersToRange.Value
+                If bManualRefresh Then
+                    Stop
+                End If
+            End If
+            
             ' check if several languages in Scope
             For r = 1 To .DataBodyRange.Rows.Count
                 If CStr(.ListColumns("Scope").DataBodyRange.Cells(r, 1).Value) = _
@@ -1172,7 +1203,7 @@ Private Sub GetArrDS()
     ' just sort by Order, if no Order - default order of execution
     Call SortDataSources
     
-    ' amount of data sources in Scope
+    ' number of data sources in Scope
     n = WorksheetFunction.CountIf(Me.ListObjects(sTableDataSourcesName).ListColumns("Scope").DataBodyRange, _
             Me.Names("CP_SCOPE").RefersToRange.Value)
     
@@ -1817,7 +1848,9 @@ Private Sub WaitSeconds(intSeconds As Integer)
         End If
         ' Yield to other programs (better than using DoEvents which eats up all the CPU cycles)
         Sleep 1000
-        DoEvents
+        If Me.Names("CP_USE_DOEVENTS").RefersToRange.Value = "Y" Then
+            DoEvents
+        End If
         k = k + 1
     Loop Until Now >= datTime
 
@@ -1851,7 +1884,7 @@ Function Actions_Handler(Optional ActionID As String) As Boolean
     On Error GoTo ErrHandler
     Debug.Print Now, "Actions Handler " & ActionID
     
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
     
         If .DataBodyRange Is Nothing Then Exit Function
         
@@ -1881,7 +1914,7 @@ Function Actions_Handler(Optional ActionID As String) As Boolean
                 Call Action_Handler(currentActionRowId)
             End If
         Next row_id
-    End With ' Me.ListObjects("CP_ACTIONS")
+    End With ' Me.ListObjects(STableActions)
     
     Actions_Handler = True
     
@@ -1902,7 +1935,7 @@ Function Action_Handler(row_id As Long) As Boolean
     On Error GoTo ErrHandler
     Debug.Print Now, "Action Handler " & row_id
     
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Save As & Email" Then
             ' prepare file for email
             Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save As & Email"
@@ -1917,8 +1950,8 @@ Function Action_Handler(row_id As Long) As Boolean
             Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Save As"
             Call FileSave_Handler(row_id)
             
-        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Email on Success" Then
-            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email on Successs"
+        ElseIf .ListColumns("Action").DataBodyRange.Cells(row_id, 1).Value = "Email" Then
+            Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email"
             If .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "SMTP" Then
                 Call Send_EMail_CDO(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
@@ -1930,7 +1963,7 @@ Function Action_Handler(row_id As Long) As Boolean
                                     .ListColumns("Email BCC").DataBodyRange.Cells(row_id, 1).Value)
                                     
             ElseIf .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "Outlook" Then
-                Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email on Success"
+                Application.StatusBar = CStr(Me.Names("CP_SCOPE").RefersToRange.Value) & ": Email"
                 
                 Call Send_Email_Outlook(.ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email Subject").DataBodyRange.Cells(row_id, 1).Value, _
@@ -1987,7 +2020,7 @@ Sub Process_Email(row_id As Long)
     sPath = FileSave_Handler(row_id) ' saves file and return path
     
     If sPath <> vbNullString Then
-        With Me.ListObjects("CP_ACTIONS")
+        With Me.ListObjects(STableActions)
             If .ListColumns("Email Method").DataBodyRange.Cells(row_id, 1).Value = "SMTP" Then
                 Call Send_EMail_CDO(.ListColumns("Email From").DataBodyRange.Cells(row_id, 1).Value, _
                                     .ListColumns("Email To").DataBodyRange.Cells(row_id, 1).Value, _
@@ -2070,7 +2103,7 @@ Function FileSave_XOR_Folder(row_id As Long) As String
     Dim sFolder As String
     On Error GoTo ErrHandler
 
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("Folder / Workspace").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
             ' no Folder - use %temp% directory
             sFolder = Environ("temp") & "\"
@@ -2119,7 +2152,7 @@ Function FileSave_XOR_FileName(row_id As Long, sFolder As String) As String
     
     On Error GoTo ErrHandler
 
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("File Name").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
             ' if no file name provided - use name of current workbook
             sFileName = Left(ThisWorkbook.Name, (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
@@ -2151,7 +2184,7 @@ Function FileSave_XOR_DateTime(row_id As Long, sFolder As String, sFileName As S
     
     On Error GoTo ErrHandler
     
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("Add Current DateTime").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
             ' if 'add current datetime' - add
             sFileNameNew = sFileName & " " & Format(Now(), .ListColumns("Add Current DateTime").DataBodyRange.Cells(row_id, 1).Value)
@@ -2198,7 +2231,7 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
     Debug.Print Now, "FileSave_XOR_Extension"
     
     ' define parameters
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("File Format").DataBodyRange.Cells(row_id, 1).Value = vbNullString Then
             ' take extension of current workbook
             sExtension = Right(ThisWorkbook.Name, Len(ThisWorkbook.Name) - (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
@@ -2229,7 +2262,7 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
     'SaveCopyAs doesn't support save to HTTP
     If Left(sFolder, 4) <> "http" Then
         If sExtension = Right(ThisWorkbook.Name, Len(ThisWorkbook.Name) - (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1)) Then
-            With Me.ListObjects("CP_ACTIONS")
+            With Me.ListObjects(STableActions)
                 If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
                    .ListColumns("Delete Sheets").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
                    .ListColumns("Delete WB Queries").DataBodyRange.Cells(row_id, 1).Value = vbNullString And _
@@ -2247,7 +2280,7 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
     End If
     
     ' if method is "Copy/Paste" - applied only to xl* formats
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If .ListColumns("Saving Method").DataBodyRange.Cells(row_id, 1).Value = "Copy/Paste" Then
             If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
                 ' copy/paste specified sheets to a new workbook
@@ -2308,12 +2341,12 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
     Set tmp_wb = Workbooks.Open(sTmp_path, UpdateLinks:=False)
     
     ' if save without macro - just save as xlsx
-    If Me.ListObjects("CP_ACTIONS").ListColumns("Save Without Macro").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
+    If Me.ListObjects(STableActions).ListColumns("Save Without Macro").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
         sTmp_path_xlsx = Environ("temp") & "\" & sFileName & " " & Format(Now(), "yyyy-MM-dd hh-mm-ss") & ".xlsx"
         tmp_wb.SaveAs sTmp_path_xlsx
     End If
     
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         If sExtension = ".CSV" Then
             If .ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
                 arr = Split(.ListColumns("Save Sheets").DataBodyRange.Cells(row_id, 1).Value, ",")
@@ -2385,7 +2418,7 @@ Function FileSave_XOR_Extension(row_id As Long, sFolder As String, sFileName As 
     ' ************** part of special actions with target workbook **************
     ' e.g. delete ControlPanel
     ' tmp_wb.Sheets("ControlPanel").Delete
-    With Me.ListObjects("CP_ACTIONS")
+    With Me.ListObjects(STableActions)
         
         ' transform formulas to values for specified sheets
         If .ListColumns("Sheets for Formulas to Values").DataBodyRange.Cells(row_id, 1).Value <> vbNullString Then
@@ -2474,7 +2507,7 @@ Exit_Sub:
     Application.DisplayAlerts = False
     tmp_wb.Close ' in case of error in tmp_wb
     Kill sTmp_path
-    If Me.ListObjects("CP_ACTIONS").ListColumns("Save Without Macro").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
+    If Me.ListObjects(STableActions).ListColumns("Save Without Macro").DataBodyRange.Cells(row_id, 1).Value = "Y" Then
         Kill sTmp_path_xlsx
     End If
     ' just in case
@@ -2542,7 +2575,6 @@ ErrHandler:
     GoTo Exit_Sub
     Resume ' for debug
 End Function
-
 
 Function Send_EMail_CDO(sFrom As String, _
                     sRecipients As String, _
@@ -2637,10 +2669,9 @@ Function Send_EMail_CDO(sFrom As String, _
                         IIf(sFrom <> vbNullString, sFrom, "BOA Automation Tool"))
                         
             .Subject = sSubject
-            .BodyFormat = 0
-            '.MailFormat = 0
+                                    
+            .htmlbody = Replace(sMessage, Chr(10), "<br>")
             
-            .htmlbody = sMessage
             '& vbCrLf & _
                 vbCrLf & _
                 ThisWorkbook.Name & vbCrLf & _
@@ -3310,12 +3341,12 @@ Private Sub PrepareForPublishing()
     Me.ListObjects(sTableDataSourcesName).DataBodyRange.Delete
     Me.ListObjects(sTableVariablesName).DataBodyRange.Delete
     
-    With Me.ListObjects("CP_ACTIONS").ListColumns("Enabled").DataBodyRange
+    With Me.ListObjects(STableActions).ListColumns("Enabled").DataBodyRange
         For i = 1 To .Rows.Count
             .Cells(i, 1).Value = "N"
-            Me.ListObjects("CP_ACTIONS").ListColumns("Email From").DataBodyRange.Cells(i, 1).Value = vbNullString
-            Me.ListObjects("CP_ACTIONS").ListColumns("Email To").DataBodyRange.Cells(i, 1).Value = vbNullString
-            Me.ListObjects("CP_ACTIONS").ListColumns("Email CC").DataBodyRange.Cells(i, 1).Value = vbNullString
+            Me.ListObjects(STableActions).ListColumns("Email From").DataBodyRange.Cells(i, 1).Value = vbNullString
+            Me.ListObjects(STableActions).ListColumns("Email To").DataBodyRange.Cells(i, 1).Value = vbNullString
+            Me.ListObjects(STableActions).ListColumns("Email CC").DataBodyRange.Cells(i, 1).Value = vbNullString
         Next i
     End With
     
@@ -3460,3 +3491,5 @@ Private Sub CreateName(sID As String, sFormat As String, sStartFormula As String
     Me.Names.Add Name:=sFullID, RefersTo:="=" & sFullIDStart & "& "" - "" & " & sFullIDEnd
     
 End Sub
+
+
