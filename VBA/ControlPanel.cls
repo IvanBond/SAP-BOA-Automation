@@ -646,8 +646,6 @@ Skipped_Data_Sources:
             Exit For ' Next lScopeRow
         End If
         
-Next_Scope:
-
         If Not bScopeFailed Then
             If Me.Names("CP_RUN_ACTIONS_EACH_SCOPE").RefersToRange.Value = "Y" Then
                 Application.StatusBar = "Actions after " & Me.Names("CP_SCOPE").RefersToRange.Value
@@ -655,6 +653,7 @@ Next_Scope:
             End If
         End If
         
+Next_Scope:
         Application.StatusBar = Me.Names("CP_SCOPE").RefersToRange.Value & ": Completed"
     Next lScopeRow
     
